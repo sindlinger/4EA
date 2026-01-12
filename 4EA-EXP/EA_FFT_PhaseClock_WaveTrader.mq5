@@ -37,6 +37,7 @@ input ENUM_TIMEFRAMES SignalTimeframe   = PERIOD_M30;      // timeframe do gatil
 // ---------------- Inputs: warmup gating ----------------
 input bool         RequireWarmupChanges = true;            // exige mudanças de cor antes da 1a ordem
 input int          WarmupColorChanges   = 2;               // quantidade de mudanças de cor
+input int          TurnDelayBars        = 0;               // esperar N barras após virada antes de entrar (0 = imediato)
 
 // ---------------- Inputs: trading & risk ----------------
 input SIGNAL_MODE  SignalMode          = SIG_TURN;
@@ -94,6 +95,9 @@ ENUM_TIMEFRAMES gConfirmTF = PERIOD_CURRENT;
 int   gWarmupChanges = 0;
 int   gPrevDir = 0;
 bool  gWarmupReady = false;
+int   gPendingDir = 0;
+int   gPendingBars = 0;
+int   gQueuedSig = 0;
 string gStatusObjName = "4EA_WarmupStatus";
 
 int MagicLeg1() { return MagicBase + 1; }
@@ -203,6 +207,43 @@ int NormalizeSignalMode(int mode)
    return mode;
 }
 
+int ApplyTurnDelay(const int handle, const bool use_closed, const int raw_sig)
+{
+   if(NormalizeSignalMode((int)SignalMode) != SIG_TURN || TurnDelayBars <= 0)
+      return raw_sig;
+
+   int dir_now = GetSlopeDir(handle, use_closed);
+
+   if(raw_sig != 0)
+   {
+      gPendingDir = raw_sig;
+      gPendingBars = 0;
+      return 0;
+   }
+
+   if(gPendingDir != 0)
+   {
+      gPendingBars++;
+
+      if(dir_now != 0 && dir_now != gPendingDir)
+      {
+         gPendingDir = 0;
+         gPendingBars = 0;
+         return 0;
+      }
+
+      if(gPendingBars >= TurnDelayBars && dir_now == gPendingDir)
+      {
+         int sig = gPendingDir;
+         gPendingDir = 0;
+         gPendingBars = 0;
+         return sig;
+      }
+   }
+
+   return 0;
+}
+
 int FindChartIndicatorHandle(const string short_name)
 {
    long chart_id = ChartID();
@@ -306,6 +347,9 @@ void UpdateWarmupStatusLabel()
       msg = StringFormat("Warmup: aguardando %d/%d", gWarmupChanges, WarmupColorChanges);
       col = clrOrange;
    }
+
+   if(TurnDelayBars > 0 && gPendingDir != 0)
+      msg = msg + StringFormat(" | Delay %d/%d", gPendingBars, TurnDelayBars);
 
    if(ObjectFind(0, gStatusObjName) < 0)
       ObjectCreate(0, gStatusObjName, OBJ_LABEL, 0, 0, 0);
@@ -857,6 +901,9 @@ int OnInit()
    gWarmupChanges = 0;
    gPrevDir = 0;
    gWarmupReady = (!RequireWarmupChanges || WarmupColorChanges <= 0);
+   gPendingDir = 0;
+   gPendingBars = 0;
+   gQueuedSig = 0;
    return INIT_SUCCEEDED;
 }
 
@@ -873,58 +920,58 @@ void OnTick()
 {
    ManageExitsAndStops();
 
+   bool new_main = UseClosedBarSignals ? IsNewBar() : true;
+   if(new_main)
+   {
+      UpdateWarmupState(gIndHandle, UseClosedBarSignals);
+      bool buy_tmp=false;
+      double stop_tmp=0.0;
+      int raw_sig = ComputeSignal(gIndHandle, buy_tmp, stop_tmp, UseClosedBarSignals);
+      int delayed_sig = ApplyTurnDelay(gIndHandle, UseClosedBarSignals, raw_sig);
+      if(delayed_sig != 0 && (!RequireWarmupChanges || gWarmupReady))
+         gQueuedSig = delayed_sig;
+   }
+
+   UpdateWarmupStatusLabel();
+
    if(UseLowerTFConfirm)
    {
       if(!IsNewConfirmBar())
-      {
-         UpdateWarmupStatusLabel();
          return;
-      }
-   }
-   else if(UseClosedBarSignals)
-   {
-      if(!IsNewBar())
-      {
-         UpdateWarmupStatusLabel();
-         return;
-      }
-   }
 
-   UpdateWarmupState(gIndHandle, UseClosedBarSignals);
-   UpdateWarmupStatusLabel();
-
-   bool buy=false;
-   double stop_pts=0.0;
-   int sig = ComputeSignal(gIndHandle, buy, stop_pts, UseClosedBarSignals);
-   if(sig == 0) return;
-
-   if(UseLowerTFConfirm)
-   {
       bool buy_c=false;
       double dummy=0.0;
       int sig_c = ComputeSignal(gConfirmHandle, buy_c, dummy, true); // confirmação sempre em barra fechada
-      if(sig_c != sig)
+      if(sig_c == 0) return;
+      if(gQueuedSig == 0) return;
+      if(sig_c != gQueuedSig) return;
+   }
+   else if(UseClosedBarSignals)
+   {
+      if(!new_main)
          return;
    }
+
+   int sig = gQueuedSig;
+   if(sig == 0) return;
 
    if(HasOurExposure())
    {
       if(CloseOnOpposite)
       {
-         bool current_buy = gPlan.active ? gPlan.buy : buy;
-         if(gPlan.active && (buy != current_buy))
+         bool desired_buy = (sig == +1);
+         bool current_buy = gPlan.active ? gPlan.buy : desired_buy;
+         if(gPlan.active && (desired_buy != current_buy))
          {
             CloseAllOurPositions();
             ResetPlan();
             if(!HasOurExposure())
-               OpenPlan(buy);
+               OpenPlan(desired_buy);
          }
       }
       return;
    }
 
-   if(RequireWarmupChanges && !gWarmupReady)
-      return;
-
-   OpenPlan(buy);
+   OpenPlan(sig == +1);
+   gQueuedSig = 0;
 }
