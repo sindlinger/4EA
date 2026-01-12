@@ -58,6 +58,12 @@ enum OUTPUT_MODE
    OUT_PHASE_DEG
 };
 
+enum VIEW_MODE
+{
+   VIEW_WAVE = 0,
+   VIEW_AMPLITUDE
+};
+
 enum PAD_MODE
 {
    PAD_ZERO = 0,
@@ -88,7 +94,7 @@ input BAND_SHAPE   BandShape      = BAND_RECT;
 
 input OUTPUT_MODE  OutputMode     = OUT_SIN;
 input bool         NormalizeAmp   = false;
-input bool         ShowAmplitudePlot = true;
+input bool         StartWithAmplitude = false;
 input double       PhaseOffsetDeg = 315;   // ajuste de fase aplicado na saída SIN/COS (graus)
 input double       LeadBars         = 0;   // avanço de fase (em "barras") para reduzir atraso; 0 = original
 input bool         LeadUseCycleOmega = true; // true: omega=2*pi/CycleBars (estável). false: omega por dPhase (experimental)
@@ -156,9 +162,11 @@ double   gLeadOmega = 0.0;
 double   gPrevPhaseForOmega = 0.0;
 bool     gMaskOk = true;
 bool     gWarnedBand = false;
+int      gViewMode = VIEW_WAVE;
 
 // object prefix for forecast/clock objects (must be declared before helpers)
 string   gObjPrefix = INDICATOR_NAME + "_";
+string   gToggleName = INDICATOR_NAME + "_TOGGLE";
 
 // forecast segments (objects)
 int      gForecastSegs = 0;
@@ -167,6 +175,43 @@ int      gForecastSegs = 0;
 int      gSubWin = -1;
 // Detecta se os arrays de entrada chegam como series (0 = barra atual)
 bool     gIsSeries = false;
+
+// ---------------- UI helpers ----------------
+void ApplyPlotView()
+{
+   PlotIndexSetInteger(0, PLOT_DRAW_TYPE, gViewMode == VIEW_WAVE ? DRAW_COLOR_LINE : DRAW_NONE);
+   PlotIndexSetInteger(1, PLOT_DRAW_TYPE, gViewMode == VIEW_AMPLITUDE ? DRAW_LINE : DRAW_NONE);
+}
+
+void UpdateToggleButtonLabel()
+{
+   string txt = (gViewMode == VIEW_WAVE ? "AMP" : "WAVE");
+   ObjectSetString(0, gToggleName, OBJPROP_TEXT, txt);
+}
+
+void EnsureToggleButton()
+{
+   EnsureSubWin();
+   if(ObjectFind(0, gToggleName) < 0)
+   {
+      ObjectCreate(0, gToggleName, OBJ_BUTTON, gSubWin, 0, 0);
+      ObjectSetInteger(0, gToggleName, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+      ObjectSetInteger(0, gToggleName, OBJPROP_XDISTANCE, 8);
+      ObjectSetInteger(0, gToggleName, OBJPROP_YDISTANCE, 8);
+      ObjectSetInteger(0, gToggleName, OBJPROP_FONTSIZE, 8);
+      ObjectSetInteger(0, gToggleName, OBJPROP_COLOR, clrSilver);
+      ObjectSetInteger(0, gToggleName, OBJPROP_BORDER_COLOR, clrGray);
+      ObjectSetInteger(0, gToggleName, OBJPROP_BGCOLOR, clrBlack);
+      ObjectSetInteger(0, gToggleName, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, gToggleName, OBJPROP_HIDDEN, true);
+   }
+   UpdateToggleButtonLabel();
+}
+
+void DeleteToggleButton()
+{
+   ObjectDelete(0, gToggleName);
+}
 
 // ---------------- FFT helpers ----------------
 int NextPow2(int v){ int n=1; while(n < v) n <<= 1; return n; }
@@ -1070,7 +1115,8 @@ IndicatorSetInteger(INDICATOR_DIGITS, 8);
 
    int N = NextPow2(MathMax(32, FFTSize));
    BuildWindowAndMask(N);
-   PlotIndexSetInteger(1, PLOT_DRAW_TYPE, ShowAmplitudePlot ? DRAW_LINE : DRAW_NONE);
+   gViewMode = StartWithAmplitude ? VIEW_AMPLITUDE : VIEW_WAVE;
+   ApplyPlotView();
 
    if(FeedSource == FEED_ATR)
    {
@@ -1093,6 +1139,18 @@ void OnDeinit(const int reason)
       IndicatorRelease(gAtrHandle);
    DeleteForecastObjects();
    DeleteClockObjects();
+   DeleteToggleButton();
+}
+
+void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
+{
+   if(id == CHARTEVENT_OBJECT_CLICK && sparam == gToggleName)
+   {
+      gViewMode = (gViewMode == VIEW_WAVE ? VIEW_AMPLITUDE : VIEW_WAVE);
+      ApplyPlotView();
+      UpdateToggleButtonLabel();
+      ChartRedraw(0);
+   }
 }
 
 int OnCalculate(const int rates_total,
@@ -1109,6 +1167,8 @@ int OnCalculate(const int rates_total,
    int N = gN;
    if(rates_total >= 2)
       gIsSeries = (time[0] > time[rates_total - 1]);
+
+   EnsureToggleButton();
 
    if(rates_total < N || N <= 32)
    {
