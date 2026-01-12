@@ -8,11 +8,14 @@
 #property strict
 #property indicator_separate_window
 #define INDICATOR_NAME "FFT_PhaseClock_CLOSE_SINFLIP_LEAD_v1.5_ColorWave"
-#property indicator_buffers 2
-#property indicator_plots   1
+#property indicator_buffers 3
+#property indicator_plots   2
 #property indicator_type1   DRAW_COLOR_LINE
 #property indicator_color1  clrLimeGreen, clrRed
 #property indicator_label1  INDICATOR_NAME
+#property indicator_type2   DRAW_LINE
+#property indicator_color2  clrDodgerBlue
+#property indicator_label2  "Amplitude"
 
 
 
@@ -85,6 +88,7 @@ input BAND_SHAPE   BandShape      = BAND_RECT;
 
 input OUTPUT_MODE  OutputMode     = OUT_SIN;
 input bool         NormalizeAmp   = false;
+input bool         ShowAmplitudePlot = true;
 input double       PhaseOffsetDeg = 315;   // ajuste de fase aplicado na saída SIN/COS (graus)
 input double       LeadBars         = 0;   // avanço de fase (em "barras") para reduzir atraso; 0 = original
 input bool         LeadUseCycleOmega = true; // true: omega=2*pi/CycleBars (estável). false: omega por dPhase (experimental)
@@ -138,6 +142,7 @@ input bool         ClockShowText      = true;
 // ---------------- buffers ----------------
 double gOut[];
 double gColor[]; // 0=up (green), 1=down (red)
+double gAmp[];
 
 // ---------------- internals ----------------
 int      gAtrHandle = INVALID_HANDLE;
@@ -462,7 +467,7 @@ bool FetchSourceSeries(const int total, const double &open[], const double &high
 bool ComputeBar0Phase_Causal(const int total,
                       const double &open[], const double &high[], const double &low[], const double &close[],
                       const long &tick_volume[], const long &volume_arr[],
-                      double &out_value, double &out_phase)
+                      double &out_value, double &out_phase, double &out_amp)
 {
    int N = gN;
    if(N <= 32) return false;
@@ -511,6 +516,7 @@ bool ComputeBar0Phase_Causal(const int total,
 
    double phase = MathArctan2(aim, are);
    double amp   = MathSqrt(are*are + aim*aim);
+   out_amp = amp;
 
    if(HoldPhaseOnLowAmp && amp < LowAmpEps)
       phase = gLastPhase;
@@ -640,7 +646,7 @@ double ForecastSampleFuture(const double &src_series[], const int len, const int
 bool ComputeBar0Phase_ZeroPhase(const int total,
                                 const double &open[], const double &high[], const double &low[], const double &close[],
                                 const long &tick_volume[], const long &volume_arr[],
-                                double &out_value, double &out_phase,
+                                double &out_value, double &out_phase, double &out_amp,
                                 double &out_future[], int &out_future_count)
 {
    int N = gN;
@@ -714,6 +720,7 @@ bool ComputeBar0Phase_ZeroPhase(const int total,
 
    double phase0 = MathArctan2(aim0, are0);
    double amp0   = MathSqrt(are0*are0 + aim0*aim0);
+   out_amp = amp0;
    if(HoldPhaseOnLowAmp && amp0 < LowAmpEps)
       phase0 = gLastPhase;
 
@@ -815,18 +822,18 @@ bool ComputeBar0Phase(const int total,
                       const datetime &time[],
                       const double &open[], const double &high[], const double &low[], const double &close[],
                       const long &tick_volume[], const long &volume_arr[],
-                      double &out_value, double &out_phase)
+                      double &out_value, double &out_phase, double &out_amp)
 {
    if(!ZeroPhaseRT)
    {
       DeleteForecastObjects();
-      return ComputeBar0Phase_Causal(total, open, high, low, close, tick_volume, volume_arr, out_value, out_phase);
+      return ComputeBar0Phase_Causal(total, open, high, low, close, tick_volume, volume_arr, out_value, out_phase, out_amp);
    }
 
    double future_vals[];
    int future_count = 0;
    bool ok = ComputeBar0Phase_ZeroPhase(total, open, high, low, close, tick_volume, volume_arr,
-                                       out_value, out_phase, future_vals, future_count);
+                                       out_value, out_phase, out_amp, future_vals, future_count);
    if(!ok)
    {
       DeleteForecastObjects();
@@ -1055,12 +1062,15 @@ int OnInit()
    IndicatorSetString(INDICATOR_SHORTNAME, INDICATOR_NAME);
       SetIndexBuffer(0, gOut, INDICATOR_DATA);
    SetIndexBuffer(1, gColor, INDICATOR_COLOR_INDEX);
+   SetIndexBuffer(2, gAmp, INDICATOR_DATA);
    ArraySetAsSeries(gOut, true);
    ArraySetAsSeries(gColor, true);
+   ArraySetAsSeries(gAmp, true);
 IndicatorSetInteger(INDICATOR_DIGITS, 8);
 
    int N = NextPow2(MathMax(32, FFTSize));
    BuildWindowAndMask(N);
+   PlotIndexSetInteger(1, PLOT_DRAW_TYPE, ShowAmplitudePlot ? DRAW_LINE : DRAW_NONE);
 
    if(FeedSource == FEED_ATR)
    {
@@ -1073,6 +1083,7 @@ IndicatorSetInteger(INDICATOR_DIGITS, 8);
    }
 
    PlotIndexSetInteger(0, PLOT_DRAW_BEGIN, N);
+   PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, N);
    return INIT_SUCCEEDED;
 }
 
@@ -1128,12 +1139,14 @@ int OnCalculate(const int rates_total,
       lastBand = ApplyBandpass;
 
       PlotIndexSetInteger(0, PLOT_DRAW_BEGIN, gN);
+      PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, gN);
    }
 
-   double outv=0.0, ph=0.0;
-   if(ComputeBar0Phase(rates_total, time, open, high, low, close, tick_volume, volume, outv, ph))
+   double outv=0.0, ph=0.0, amp=0.0;
+   if(ComputeBar0Phase(rates_total, time, open, high, low, close, tick_volume, volume, outv, ph, amp))
    {
       gOut[0] = outv;        // <-- somente barra 0
+      gAmp[0] = amp;
       // Cor pela inclinação (comparando com a barra anterior já 'fechada')
       if(rates_total >= 2)
          gColor[0] = (gOut[0] >= gOut[1] ? 0.0 : 1.0);
