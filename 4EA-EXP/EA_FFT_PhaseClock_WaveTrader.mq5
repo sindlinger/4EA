@@ -1,7 +1,7 @@
 //+------------------------------------------------------------------+
 //| EA_FFT_PhaseClock_WaveTrader.mq5                                 |
 //| Trades using FFT_PhaseClock wave direction (slope).               |
-//| - Uses last CLOSED bar for signals (reduces repaint impact).      |
+//| - Gatilho por virada no TF atual, com confirmação configurável.   |
 //| - Two-leg execution (or netting emulation) with partial exits.    |
 //| - SL/TP, Break-even, Trailing stop.                               |
 //+------------------------------------------------------------------+
@@ -13,9 +13,10 @@
 CTrade gTrade;
 
 // ---------------- EA enums ----------------
-enum SIGNAL_MODE
+enum CONFIRM_SOURCE
 {
-   SIG_TURN = 0       // trade only when slope turns (down->up or up->down) on closed bars
+   CONFIRM_CURRENT_TF = 0,
+   CONFIRM_AUX_TF
 };
 
 enum LOT_MODE
@@ -29,9 +30,10 @@ input bool         UseChartIndicator   = true; // usa o indicador já anexado ao
 input string       InpIndicatorShortName = "FFT_PhaseClock_CLOSE_SINFLIP_LEAD_v1.5_ColorWave";
 input string       InpIndicatorName    = "4EA-IND\\IND-FFT_PhaseClock_CLOSE_SINFLIP_LEAD_v1.5_ColorWave.ex5";
 
-// ---------------- Inputs: lower timeframe confirmation ----------------
-input bool            UseLowerTFConfirm = true;            // confirma entradas/saídas no TF inferior (barra fechada)
-input ENUM_TIMEFRAMES SignalTimeframe   = PERIOD_M30;      // timeframe do gatilho (default M30)
+// ---------------- Inputs: confirmação ----------------
+input CONFIRM_SOURCE   ConfirmSource     = CONFIRM_AUX_TF;  // timeframe atual ou auxiliar
+input ENUM_TIMEFRAMES  ConfirmTimeframe  = PERIOD_M30;      // usado quando ConfirmSource = auxiliar
+input int              ConfirmBarShift   = 1;              // barra de confirmacao (0,1,2...)
 
 // ---------------- Inputs: warmup gating ----------------
 input bool         RequireWarmupChanges = true;            // exige mudanças de cor antes da 1a ordem
@@ -39,8 +41,6 @@ input int          WarmupColorChanges   = 2;               // quantidade de muda
 input int          TurnDelayBars        = 0;               // esperar N barras após virada antes de entrar (0 = imediato)
 
 // ---------------- Inputs: trading & risk ----------------
-input SIGNAL_MODE  SignalMode          = SIG_TURN;
-input bool         UseClosedBarSignals = true;   // true = use bar 1/2/3; false = bar 0/1/2 (more repaint-prone)
 input double       MinSlopeAbs         = 0.0;    // ignore tiny slope turns (absolute delta in indicator units)
 
 input bool         AllowBuy            = true;
@@ -97,6 +97,8 @@ bool  gWarmupReady = false;
 int   gPendingDir = 0;
 int   gPendingBars = 0;
 int   gQueuedSig = 0;
+int   gLastTurnSig = 0;
+bool  gConfirmWaiting = false;
 string gStatusObjName = "4EA_WarmupStatus";
 
 int MagicLeg1() { return MagicBase + 1; }
@@ -179,10 +181,8 @@ bool IsNewBar()
 
 bool IsNewConfirmBar()
 {
-   if(!UseLowerTFConfirm)
-      return IsNewBar();
-
-   datetime t1 = (datetime)iTime(_Symbol, gConfirmTF, 1); // barra FECHADA do TF de confirmação
+   int shift = (ConfirmBarShift <= 0 ? 1 : ConfirmBarShift);
+   datetime t1 = (datetime)iTime(_Symbol, gConfirmTF, shift);
    if(t1 == 0) return false;
    if(t1 != gLastConfirmBarTime)
    {
@@ -199,17 +199,12 @@ int Sign(double x)
    return 0;
 }
 
-int NormalizeSignalMode(int mode)
-{
-   return (int)SIG_TURN;
-}
-
-int ApplyTurnDelay(const int handle, const bool use_closed, const int raw_sig)
+int ApplyTurnDelay(const int handle, const int shift, const int raw_sig, const bool new_main)
 {
    if(TurnDelayBars <= 0)
       return raw_sig;
 
-   int dir_now = GetSlopeDir(handle, use_closed);
+   int dir_now = GetSlopeDir(handle, shift);
 
    if(raw_sig != 0)
    {
@@ -220,7 +215,8 @@ int ApplyTurnDelay(const int handle, const bool use_closed, const int raw_sig)
 
    if(gPendingDir != 0)
    {
-      gPendingBars++;
+      if(new_main)
+         gPendingBars++;
 
       if(dir_now != 0 && dir_now != gPendingDir)
       {
@@ -265,55 +261,51 @@ int FindChartIndicatorHandle(const string short_name)
    return INVALID_HANDLE;
 }
 
-bool GetWaveFromHandle(const int handle, double &v0, double &v1, double &v2, double &v3)
+bool GetWaveSeries(const int handle, const int count, double &buf[])
 {
    if(handle == INVALID_HANDLE) return false;
-   double buf[];
-   ArrayResize(buf, 4);
+   if(count <= 0) return false;
+   ArrayResize(buf, count);
    ArraySetAsSeries(buf, true);
-   
-   if(CopyBuffer(handle, 0, 0, 4, buf) != 4)
+
+   if(CopyBuffer(handle, 0, 0, count, buf) != count)
       return false;
-
-
-   v0 = buf[0];
-   v1 = buf[1];
-   v2 = buf[2];
-   v3 = buf[3];
    return true;
 }
 
-bool GetSlopesFromHandle(const int handle, bool use_closed, double &slope_now, double &slope_prev)
+bool GetSlopesFromHandleShift(const int handle, const int shift, double &slope_now, double &slope_prev)
 {
-   double v0, v1, v2, v3;
-   if(!GetWaveFromHandle(handle, v0, v1, v2, v3))
+   int s = shift;
+   if(s < 0) s = 0;
+   int need = s + 3;
+   double buf[];
+   if(!GetWaveSeries(handle, need, buf))
       return false;
-
-   double a = use_closed ? v1 : v0;
-   double b = use_closed ? v2 : v1;
-   double c = use_closed ? v3 : v2;
+   double a = buf[s];
+   double b = buf[s+1];
+   double c = buf[s+2];
 
    slope_now  = a - b;
    slope_prev = b - c;
    return true;
 }
 
-int GetSlopeDir(const int handle, bool use_closed)
+int GetSlopeDir(const int handle, const int shift)
 {
    double slope_now=0.0, slope_prev=0.0;
-   if(!GetSlopesFromHandle(handle, use_closed, slope_now, slope_prev))
+   if(!GetSlopesFromHandleShift(handle, shift, slope_now, slope_prev))
       return 0;
 
    if(MathAbs(slope_now) < MinSlopeAbs) slope_now = 0.0;
    return Sign(slope_now);
 }
 
-void UpdateWarmupState(const int handle, bool use_closed)
+void UpdateWarmupState(const int handle, const int shift)
 {
    if(!RequireWarmupChanges || gWarmupReady)
       return;
 
-   int dir_now = GetSlopeDir(handle, use_closed);
+   int dir_now = GetSlopeDir(handle, shift);
    if(dir_now == 0)
       return;
 
@@ -347,7 +339,7 @@ void UpdateWarmupStatusLabel()
 
    if(TurnDelayBars > 0 && gPendingDir != 0)
       msg = msg + StringFormat(" | Delay %d/%d", gPendingBars, TurnDelayBars);
-   if(UseLowerTFConfirm && gQueuedSig != 0)
+   if(gConfirmWaiting)
       msg = msg + StringFormat(" | Conf %s pendente", EnumToString(gConfirmTF));
 
    if(ObjectFind(0, gStatusObjName) < 0)
@@ -364,32 +356,25 @@ void UpdateWarmupStatusLabel()
    ObjectSetString(0, gStatusObjName, OBJPROP_TEXT, msg);
 }
 
-int ComputeSignal(const int handle, bool &is_buy, double &ref_stop_points, bool use_closed)
+int ComputeSignal(const int handle, const int shift, bool &is_buy, double &ref_stop_points)
 {
    // Returns: +1 buy, -1 sell, 0 none
    double slope_now=0.0, slope_prev=0.0;
-   if(!GetSlopesFromHandle(handle, use_closed, slope_now, slope_prev))
+   if(!GetSlopesFromHandleShift(handle, shift, slope_now, slope_prev))
       return 0;
 
    if(MathAbs(slope_now) < MinSlopeAbs) slope_now = 0.0;
    if(MathAbs(slope_prev) < MinSlopeAbs) slope_prev = 0.0;
 
    int sig = 0;
-   int mode = NormalizeSignalMode((int)SignalMode);
 
-   if(mode == SIG_TURN)
+   if(true)
    {
       int d_now  = Sign(slope_now);
       int d_prev = Sign(slope_prev);
 
       if(d_now > 0 && d_prev <= 0) sig = +1;
       else if(d_now < 0 && d_prev >= 0) sig = -1;
-   }
-   else if(mode == SIG_SLOPE)
-   {
-      int d_now = Sign(slope_now);
-      if(d_now > 0) sig = +1;
-      else if(d_now < 0) sig = -1;
    }
    if(sig == +1 && !AllowBuy) return 0;
    if(sig == -1 && !AllowSell) return 0;
@@ -853,7 +838,7 @@ int OnInit()
    gOwnHandle = false;
    gOwnConfirmHandle = false;
 
-   gConfirmTF = UseLowerTFConfirm ? SignalTimeframe : _Period;
+   gConfirmTF = (ConfirmSource == CONFIRM_AUX_TF ? ConfirmTimeframe : _Period);
    if(gConfirmTF == PERIOD_CURRENT)
       gConfirmTF = _Period;
 
@@ -875,34 +860,33 @@ int OnInit()
       return INIT_FAILED;
    }
 
-   if(UseLowerTFConfirm)
+   if(gConfirmTF == _Period)
    {
-      if(gConfirmTF == _Period)
-      {
-         gConfirmHandle = gIndHandle;
-      }
-      else
-      {
-         gConfirmHandle = iCustom(_Symbol, gConfirmTF, InpIndicatorName);
-         if(gConfirmHandle != INVALID_HANDLE)
-            gOwnConfirmHandle = true;
-      }
+      gConfirmHandle = gIndHandle;
+   }
+   else
+   {
+      gConfirmHandle = iCustom(_Symbol, gConfirmTF, InpIndicatorName);
+      if(gConfirmHandle != INVALID_HANDLE)
+         gOwnConfirmHandle = true;
+   }
 
-      if(gConfirmHandle == INVALID_HANDLE)
-      {
-         Print("Não foi possível criar handle de confirmação no TF: ", (int)gConfirmTF);
-         return INIT_FAILED;
-      }
+   if(gConfirmHandle == INVALID_HANDLE)
+   {
+      Print("Não foi possível criar handle de confirmação no TF: ", (int)gConfirmTF);
+      return INIT_FAILED;
    }
 
    gLastBarTime = (datetime)iTime(_Symbol, _Period, 0);
-   gLastConfirmBarTime = (datetime)iTime(_Symbol, gConfirmTF, 1);
+   gLastConfirmBarTime = (datetime)iTime(_Symbol, gConfirmTF, (ConfirmBarShift <= 0 ? 1 : ConfirmBarShift));
    gWarmupChanges = 0;
    gPrevDir = 0;
    gWarmupReady = (!RequireWarmupChanges || WarmupColorChanges <= 0);
    gPendingDir = 0;
    gPendingBars = 0;
    gQueuedSig = 0;
+   gLastTurnSig = 0;
+   gConfirmWaiting = false;
    return INIT_SUCCEEDED;
 }
 
@@ -919,40 +903,54 @@ void OnTick()
 {
    ManageExitsAndStops();
 
-   bool new_main = UseClosedBarSignals ? IsNewBar() : true;
-   if(new_main)
+   bool new_main = IsNewBar();
+
+   UpdateWarmupState(gIndHandle, 0);
+
+   bool buy_tmp=false;
+   double stop_tmp=0.0;
+   int raw_sig = ComputeSignal(gIndHandle, 0, buy_tmp, stop_tmp);
+
+   int dir_now = GetSlopeDir(gIndHandle, 0);
+   if(dir_now == 0)
+      gLastTurnSig = 0;
+
+   if(raw_sig != 0)
    {
-      UpdateWarmupState(gIndHandle, UseClosedBarSignals);
-      bool buy_tmp=false;
-      double stop_tmp=0.0;
-      int raw_sig = ComputeSignal(gIndHandle, buy_tmp, stop_tmp, UseClosedBarSignals);
-      int delayed_sig = ApplyTurnDelay(gIndHandle, UseClosedBarSignals, raw_sig);
-      if(delayed_sig != 0 && (!RequireWarmupChanges || gWarmupReady))
-         gQueuedSig = delayed_sig;
+      if(raw_sig == gLastTurnSig)
+         raw_sig = 0;
+      else
+         gLastTurnSig = raw_sig;
    }
 
+   int delayed_sig = ApplyTurnDelay(gIndHandle, 0, raw_sig, new_main);
+   if(delayed_sig != 0 && (!RequireWarmupChanges || gWarmupReady))
+      gQueuedSig = delayed_sig;
+
+   gConfirmWaiting = false;
    UpdateWarmupStatusLabel();
 
-   if(UseLowerTFConfirm)
+   if(gQueuedSig == 0) return;
+
+   if(ConfirmBarShift > 0)
    {
       if(!IsNewConfirmBar())
+      {
+         gConfirmWaiting = true;
+         UpdateWarmupStatusLabel();
          return;
-
-      bool buy_c=false;
-      double dummy=0.0;
-      int sig_c = ComputeSignal(gConfirmHandle, buy_c, dummy, true); // confirmação sempre em barra fechada
-      if(sig_c == 0) return;
-      if(gQueuedSig == 0) return;
-      if(sig_c != gQueuedSig) return;
+      }
    }
-   else if(UseClosedBarSignals)
+
+   int dir_conf = GetSlopeDir(gConfirmHandle, ConfirmBarShift);
+   if(dir_conf == 0 || dir_conf != gQueuedSig)
    {
-      if(!new_main)
-         return;
+      gConfirmWaiting = true;
+      UpdateWarmupStatusLabel();
+      return;
    }
 
    int sig = gQueuedSig;
-   if(sig == 0) return;
 
    if(HasOurExposure())
    {
