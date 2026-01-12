@@ -16,8 +16,7 @@ CTrade gTrade;
 enum SIGNAL_MODE
 {
    SIG_TURN = 0,      // trade only when slope turns (down->up or up->down) on closed bars
-   SIG_SLOPE,         // trade whenever slope is up/down on the last closed bar
-   SIG_ZERO_CROSS     // trade on zero-cross (last closed bar)
+   SIG_SLOPE          // trade whenever slope is up/down on the last closed bar
 };
 
 enum LOT_MODE
@@ -341,13 +340,6 @@ int ComputeSignal(const int handle, bool &is_buy, double &ref_stop_points, bool 
       if(d_now > 0) sig = +1;
       else if(d_now < 0) sig = -1;
    }
-   else if(SignalMode == SIG_ZERO_CROSS)
-   {
-      // Cross zero between b and a
-      if(b <= 0.0 && a > 0.0) sig = +1;
-      else if(b >= 0.0 && a < 0.0) sig = -1;
-   }
-
    if(sig == +1 && !AllowBuy) return 0;
    if(sig == -1 && !AllowSell) return 0;
 
