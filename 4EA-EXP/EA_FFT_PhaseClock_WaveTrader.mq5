@@ -95,6 +95,7 @@ ENUM_TIMEFRAMES gConfirmTF = PERIOD_CURRENT;
 int   gWarmupChanges = 0;
 int   gPrevDir = 0;
 bool  gWarmupReady = false;
+string gStatusObjName = "4EA_WarmupStatus";
 
 int MagicLeg1() { return MagicBase + 1; }
 int MagicLeg2() { return MagicBase + 2; }
@@ -278,6 +279,40 @@ void UpdateWarmupState(const int handle, bool use_closed)
    gPrevDir = dir_now;
    if(gWarmupChanges >= WarmupColorChanges)
       gWarmupReady = true;
+}
+
+void UpdateWarmupStatusLabel()
+{
+   string msg;
+   color col;
+   if(!RequireWarmupChanges)
+   {
+      msg = "Warmup: OFF";
+      col = clrSilver;
+   }
+   else if(gWarmupReady)
+   {
+      msg = "Warmup: OK";
+      col = clrLimeGreen;
+   }
+   else
+   {
+      msg = StringFormat("Warmup: aguardando %d/%d", gWarmupChanges, WarmupColorChanges);
+      col = clrOrange;
+   }
+
+   if(ObjectFind(0, gStatusObjName) < 0)
+      ObjectCreate(0, gStatusObjName, OBJ_LABEL, 0, 0, 0);
+
+   ObjectSetInteger(0, gStatusObjName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, gStatusObjName, OBJPROP_XDISTANCE, 10);
+   ObjectSetInteger(0, gStatusObjName, OBJPROP_YDISTANCE, 20);
+   ObjectSetInteger(0, gStatusObjName, OBJPROP_COLOR, col);
+   ObjectSetInteger(0, gStatusObjName, OBJPROP_FONTSIZE, 10);
+   ObjectSetString(0, gStatusObjName, OBJPROP_FONT, "Arial");
+   ObjectSetInteger(0, gStatusObjName, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, gStatusObjName, OBJPROP_HIDDEN, true);
+   ObjectSetString(0, gStatusObjName, OBJPROP_TEXT, msg);
 }
 
 int ComputeSignal(const int handle, bool &is_buy, double &ref_stop_points, bool use_closed)
@@ -831,6 +866,7 @@ void OnDeinit(const int reason)
       IndicatorRelease(gIndHandle);
    if(gOwnConfirmHandle && gConfirmHandle != INVALID_HANDLE)
       IndicatorRelease(gConfirmHandle);
+   ObjectDelete(0, gStatusObjName);
 }
 
 void OnTick()
@@ -840,15 +876,22 @@ void OnTick()
    if(UseLowerTFConfirm)
    {
       if(!IsNewConfirmBar())
+      {
+         UpdateWarmupStatusLabel();
          return;
+      }
    }
    else if(UseClosedBarSignals)
    {
       if(!IsNewBar())
+      {
+         UpdateWarmupStatusLabel();
          return;
+      }
    }
 
    UpdateWarmupState(gIndHandle, UseClosedBarSignals);
+   UpdateWarmupStatusLabel();
 
    bool buy=false;
    double stop_pts=0.0;
