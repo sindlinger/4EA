@@ -275,21 +275,6 @@ bool GetWaveSeries(const int handle, const int count, double &buf[])
    return true;
 }
 
-bool GetDirFromHandle(const int handle, const int shift, int &dir)
-{
-   if(handle == INVALID_HANDLE) return false;
-   if(shift < 0) return false;
-   double buf[];
-   ArrayResize(buf, 1);
-   ArraySetAsSeries(buf, true);
-   if(CopyBuffer(handle, 2, shift, 1, buf) != 1)
-      return false;
-   if(buf[0] > 0.0) dir = 1;
-   else if(buf[0] < 0.0) dir = -1;
-   else dir = 0;
-   return true;
-}
-
 bool GetSlopesFromHandleShift(const int handle, const int shift, double &slope_now, double &slope_prev)
 {
    int s = shift;
@@ -309,10 +294,6 @@ bool GetSlopesFromHandleShift(const int handle, const int shift, double &slope_n
 
 int GetSlopeDir(const int handle, const int shift)
 {
-   int dir = 0;
-   if(GetDirFromHandle(handle, shift, dir))
-      return dir;
-
    double slope_now=0.0, slope_prev=0.0;
    if(!GetSlopesFromHandleShift(handle, shift, slope_now, slope_prev))
       return 0;
@@ -380,25 +361,20 @@ void UpdateWarmupStatusLabel()
 int ComputeSignal(const int handle, const int shift, bool &is_buy, double &ref_stop_points)
 {
    // Returns: +1 buy, -1 sell, 0 none
-   int d_now=0, d_prev=0;
-   bool dir_ok = GetDirFromHandle(handle, shift, d_now) && GetDirFromHandle(handle, shift + 1, d_prev);
-   if(!dir_ok)
-   {
-      double slope_now=0.0, slope_prev=0.0;
-      if(!GetSlopesFromHandleShift(handle, shift, slope_now, slope_prev))
-         return 0;
+   double slope_now=0.0, slope_prev=0.0;
+   if(!GetSlopesFromHandleShift(handle, shift, slope_now, slope_prev))
+      return 0;
 
-      if(MathAbs(slope_now) < MinSlopeAbs) slope_now = 0.0;
-      if(MathAbs(slope_prev) < MinSlopeAbs) slope_prev = 0.0;
-
-      d_now = Sign(slope_now);
-      d_prev = Sign(slope_prev);
-   }
+   if(MathAbs(slope_now) < MinSlopeAbs) slope_now = 0.0;
+   if(MathAbs(slope_prev) < MinSlopeAbs) slope_prev = 0.0;
 
    int sig = 0;
 
    if(true)
    {
+      int d_now  = Sign(slope_now);
+      int d_prev = Sign(slope_prev);
+
       if(d_now > 0 && d_prev <= 0) sig = +1;
       else if(d_now < 0 && d_prev >= 0) sig = -1;
    }

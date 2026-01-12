@@ -8,7 +8,7 @@
 #property strict
 #property indicator_separate_window
 #define INDICATOR_NAME "FFT_PhaseClock_CLOSE_SINFLIP_LEAD_v1.5_ColorWave"
-#property indicator_buffers 3
+#property indicator_buffers 2
 #property indicator_plots   1
 #property indicator_type1   DRAW_COLOR_LINE
 #property indicator_color1  clrLimeGreen, clrRed
@@ -70,7 +70,7 @@ enum FORECAST_MODE
 
 // ---------------- inputs ----------------
 input FEED_SOURCE  FeedSource     = FEED_OHLC4;
-input int          AtrPeriod      = 26;
+input int          AtrPeriod      = 17;
 input int          FFTSize        = 512;
 input WINDOW_TYPE  WindowType     = WIN_SINE;
 input double       KaiserBeta     = 4; // 8.6; DEFAULT
@@ -79,7 +79,7 @@ input bool         CausalWindow   = false; // janela com pico no presente (barra
 
 input bool         RemoveDC       = false;
 input bool         ApplyBandpass  = true;
-input int          CycleBars      = 26;
+input int          CycleBars      = 17;
 input double       BandwidthPct   = 200.0;
 input BAND_SHAPE   BandShape      = BAND_RECT;
 
@@ -108,10 +108,6 @@ input int          ForecastLineWidth = 1;
 
 input bool         HoldPhaseOnLowAmp = true;
 input double       LowAmpEps      = 1e-9;
-
-// Direcao/sinal (filtro de viradas falsas) — sem alterar a wave
-input double       DirMinSlopeAbs  = 0.0;  // limiar minimo da inclinacao para mudar direcao
-input int          DirConfirmBars  = 0;    // exige N barras consecutivas (0 = imediato)
 
 // Clock visuals
 input bool         ShowPhaseClock = false;
@@ -142,7 +138,6 @@ input bool         ClockShowText      = true;
 // ---------------- buffers ----------------
 double gOut[];
 double gColor[]; // 0=up (green), 1=down (red)
-double gDir[];   // -1/0/+1 direção filtrada (buffer para EAs)
 
 // ---------------- internals ----------------
 int      gAtrHandle = INVALID_HANDLE;
@@ -156,7 +151,6 @@ double   gLeadOmega = 0.0;
 double   gPrevPhaseForOmega = 0.0;
 bool     gMaskOk = true;
 bool     gWarnedBand = false;
-int      gDirLast = 0;
 
 // object prefix for forecast/clock objects (must be declared before helpers)
 string   gObjPrefix = INDICATOR_NAME + "_";
@@ -1061,10 +1055,8 @@ int OnInit()
    IndicatorSetString(INDICATOR_SHORTNAME, INDICATOR_NAME);
       SetIndexBuffer(0, gOut, INDICATOR_DATA);
    SetIndexBuffer(1, gColor, INDICATOR_COLOR_INDEX);
-   SetIndexBuffer(2, gDir, INDICATOR_DATA);
    ArraySetAsSeries(gOut, true);
    ArraySetAsSeries(gColor, true);
-   ArraySetAsSeries(gDir, true);
 IndicatorSetInteger(INDICATOR_DIGITS, 8);
 
    int N = NextPow2(MathMax(32, FFTSize));
@@ -1142,42 +1134,11 @@ int OnCalculate(const int rates_total,
    if(ComputeBar0Phase(rates_total, time, open, high, low, close, tick_volume, volume, outv, ph))
    {
       gOut[0] = outv;        // <-- somente barra 0
-      // Direção filtrada (anti-viradas falsas) sem mexer na wave
-      int dir = 0;
+      // Cor pela inclinação (comparando com a barra anterior já 'fechada')
       if(rates_total >= 2)
-      {
-         double slope0 = gOut[0] - gOut[1];
-         if(MathAbs(slope0) >= DirMinSlopeAbs)
-            dir = (slope0 > 0.0 ? 1 : -1);
-      }
-
-      if(dir == 0)
-         dir = gDirLast;
-
-      if(DirConfirmBars > 0 && rates_total >= (DirConfirmBars + 2))
-      {
-         bool ok = true;
-         for(int i=0; i<=DirConfirmBars; i++)
-         {
-            double s = gOut[i] - gOut[i+1];
-            int d = 0;
-            if(MathAbs(s) >= DirMinSlopeAbs)
-               d = (s > 0.0 ? 1 : -1);
-            if(d == 0 || d != dir)
-            {
-               ok = false;
-               break;
-            }
-         }
-         if(!ok)
-            dir = gDirLast;
-      }
-
-      if(dir != 0)
-         gDirLast = dir;
-
-      gDir[0] = dir;
-      gColor[0] = (dir < 0 ? 1.0 : 0.0);
+         gColor[0] = (gOut[0] >= gOut[1] ? 0.0 : 1.0);
+      else
+         gColor[0] = 0.0;
 
       UpdatePhaseClock(ph);
    }
