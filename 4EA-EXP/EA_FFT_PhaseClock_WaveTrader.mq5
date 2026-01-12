@@ -31,9 +31,9 @@ input bool         UseChartIndicator   = true; // usa o indicador já anexado ao
 input string       InpIndicatorShortName = "FFT_PhaseClock_CLOSE_SINFLIP_LEAD_v1.5_ColorWave";
 input string       InpIndicatorName    = "4EA-IND\\IND-FFT_PhaseClock_CLOSE_SINFLIP_LEAD_v1.5_ColorWave.ex5";
 
-// ---------------- Inputs: signal timeframe ----------------
-input bool            UseLowerTFSignals = true;            // usa sinais do timeframe inferior
-input ENUM_TIMEFRAMES SignalTimeframe  = PERIOD_M30;       // timeframe do gatilho (default M30)
+// ---------------- Inputs: lower timeframe confirmation ----------------
+input bool            UseLowerTFConfirm = true;            // confirma entradas/saídas no TF inferior (barra fechada)
+input ENUM_TIMEFRAMES SignalTimeframe   = PERIOD_M30;      // timeframe do gatilho (default M30)
 
 // ---------------- Inputs: trading & risk ----------------
 input SIGNAL_MODE  SignalMode          = SIG_TURN;
@@ -82,10 +82,12 @@ input int          TrailStepPoints     = 10;
 
 // ---------------- Internals ----------------
 int   gIndHandle = INVALID_HANDLE;
+int   gConfirmHandle = INVALID_HANDLE;
 datetime gLastBarTime = 0;
+datetime gLastConfirmBarTime = 0;
 bool  gOwnHandle = false;
-ENUM_TIMEFRAMES gSignalTF = PERIOD_CURRENT;
-datetime gLastSignalBarTime = 0;
+bool  gOwnConfirmHandle = false;
+ENUM_TIMEFRAMES gConfirmTF = PERIOD_CURRENT;
 
 int MagicLeg1() { return MagicBase + 1; }
 int MagicLeg2() { return MagicBase + 2; }
@@ -165,16 +167,16 @@ bool IsNewBar()
    return false;
 }
 
-bool IsNewSignalBar()
+bool IsNewConfirmBar()
 {
-   if(!UseLowerTFSignals)
+   if(!UseLowerTFConfirm)
       return IsNewBar();
 
-   datetime t1 = (datetime)iTime(_Symbol, gSignalTF, 1); // barra FECHADA do TF de sinal
+   datetime t1 = (datetime)iTime(_Symbol, gConfirmTF, 1); // barra FECHADA do TF de confirmação
    if(t1 == 0) return false;
-   if(t1 != gLastSignalBarTime)
+   if(t1 != gLastConfirmBarTime)
    {
-      gLastSignalBarTime = t1;
+      gLastConfirmBarTime = t1;
       return true;
    }
    return false;
@@ -211,14 +213,14 @@ int FindChartIndicatorHandle(const string short_name)
    return INVALID_HANDLE;
 }
 
-bool GetWave(double &v0, double &v1, double &v2, double &v3)
+bool GetWaveFromHandle(const int handle, double &v0, double &v1, double &v2, double &v3)
 {
-   if(gIndHandle == INVALID_HANDLE) return false;
+   if(handle == INVALID_HANDLE) return false;
    double buf[];
    ArrayResize(buf, 4);
    ArraySetAsSeries(buf, true);
    
-   if(CopyBuffer(gIndHandle, 0, 0, 4, buf) != 4)
+   if(CopyBuffer(handle, 0, 0, 4, buf) != 4)
       return false;
 
 
@@ -229,11 +231,11 @@ bool GetWave(double &v0, double &v1, double &v2, double &v3)
    return true;
 }
 
-int ComputeSignal(bool &is_buy, double &ref_stop_points, bool use_closed)
+int ComputeSignal(const int handle, bool &is_buy, double &ref_stop_points, bool use_closed)
 {
    // Returns: +1 buy, -1 sell, 0 none
    double v0, v1, v2, v3;
-   if(!GetWave(v0, v1, v2, v3))
+   if(!GetWaveFromHandle(handle, v0, v1, v2, v3))
       return 0;
 
    // choose bar shifts
@@ -728,19 +730,21 @@ int OnInit()
    ResetPlan();
 
    gIndHandle = INVALID_HANDLE;
+   gConfirmHandle = INVALID_HANDLE;
    gOwnHandle = false;
+   gOwnConfirmHandle = false;
 
-   gSignalTF = UseLowerTFSignals ? SignalTimeframe : _Period;
-   if(gSignalTF == PERIOD_CURRENT)
-      gSignalTF = _Period;
+   gConfirmTF = UseLowerTFConfirm ? SignalTimeframe : _Period;
+   if(gConfirmTF == PERIOD_CURRENT)
+      gConfirmTF = _Period;
 
-   if(UseChartIndicator && !UseLowerTFSignals)
+   if(UseChartIndicator)
       gIndHandle = FindChartIndicatorHandle(InpIndicatorShortName);
 
    if(gIndHandle == INVALID_HANDLE)
    {
       // Chama o indicador sem parâmetros para usar exatamente os defaults internos.
-      gIndHandle = iCustom(_Symbol, gSignalTF, InpIndicatorName);
+      gIndHandle = iCustom(_Symbol, _Period, InpIndicatorName);
       if(gIndHandle != INVALID_HANDLE)
          gOwnHandle = true;
    }
@@ -752,8 +756,28 @@ int OnInit()
       return INIT_FAILED;
    }
 
+   if(UseLowerTFConfirm)
+   {
+      if(gConfirmTF == _Period)
+      {
+         gConfirmHandle = gIndHandle;
+      }
+      else
+      {
+         gConfirmHandle = iCustom(_Symbol, gConfirmTF, InpIndicatorName);
+         if(gConfirmHandle != INVALID_HANDLE)
+            gOwnConfirmHandle = true;
+      }
+
+      if(gConfirmHandle == INVALID_HANDLE)
+      {
+         Print("Não foi possível criar handle de confirmação no TF: ", (int)gConfirmTF);
+         return INIT_FAILED;
+      }
+   }
+
    gLastBarTime = (datetime)iTime(_Symbol, _Period, 0);
-   gLastSignalBarTime = (datetime)iTime(_Symbol, gSignalTF, 1);
+   gLastConfirmBarTime = (datetime)iTime(_Symbol, gConfirmTF, 1);
    return INIT_SUCCEEDED;
 }
 
@@ -761,23 +785,38 @@ void OnDeinit(const int reason)
 {
    if(gOwnHandle && gIndHandle != INVALID_HANDLE)
       IndicatorRelease(gIndHandle);
+   if(gOwnConfirmHandle && gConfirmHandle != INVALID_HANDLE)
+      IndicatorRelease(gConfirmHandle);
 }
 
 void OnTick()
 {
    ManageExitsAndStops();
 
-   bool use_closed = (UseClosedBarSignals || UseLowerTFSignals);
-   if(use_closed)
+   if(UseLowerTFConfirm)
    {
-      if(!IsNewSignalBar())
+      if(!IsNewConfirmBar())
+         return;
+   }
+   else if(UseClosedBarSignals)
+   {
+      if(!IsNewBar())
          return;
    }
 
    bool buy=false;
    double stop_pts=0.0;
-   int sig = ComputeSignal(buy, stop_pts, use_closed);
+   int sig = ComputeSignal(gIndHandle, buy, stop_pts, UseClosedBarSignals);
    if(sig == 0) return;
+
+   if(UseLowerTFConfirm)
+   {
+      bool buy_c=false;
+      double dummy=0.0;
+      int sig_c = ComputeSignal(gConfirmHandle, buy_c, dummy, true); // confirmação sempre em barra fechada
+      if(sig_c != sig)
+         return;
+   }
 
    if(HasOurExposure())
    {
