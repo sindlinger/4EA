@@ -160,6 +160,8 @@ int      gForecastSegs = 0;
 
 // Subwindow onde o indicador está
 int      gSubWin = -1;
+// Detecta se os arrays de entrada chegam como series (0 = barra atual)
+bool     gIsSeries = false;
 
 // ---------------- FFT helpers ----------------
 int NextPow2(int v){ int n=1; while(n < v) n <<= 1; return n; }
@@ -384,9 +386,17 @@ void BuildWindowAndMask(const int N)
 
 int BarIndexFromShift(const int shift, const int total)
 {
-   // Arrays recebidos no OnCalculate (MQL5) vêm em ordem cronológica:
-   // 0 = mais antigo ... total-1 = mais recente.
-   // shift: 0 = barra atual (mais recente), 1 = barra anterior, ...
+   // shift: 0 = barra atual, 1 = barra anterior, ...
+   // Se os arrays vierem como series (0 = atual), usamos o shift direto.
+   if(gIsSeries)
+   {
+      int idx = shift;
+      if(idx < 0) idx = 0;
+      if(idx >= total) idx = total - 1;
+      return idx;
+   }
+
+   // Caso contrário, arrays em ordem cronológica (0 = mais antigo).
    int idx = total - 1 - shift;
    if(idx < 0) idx = 0;
    if(idx >= total) idx = total - 1;
@@ -1086,6 +1096,9 @@ int OnCalculate(const int rates_total,
                 const int& spread[])
 {
    int N = gN;
+   if(rates_total >= 2)
+      gIsSeries = (time[0] > time[rates_total - 1]);
+
    if(rates_total < N || N <= 32)
    {
       DeleteForecastObjects();

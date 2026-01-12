@@ -12,53 +12,6 @@
 
 CTrade gTrade;
 
-// ---------------- Indicator enums (must match indicator) ----------------
-enum FEED_SOURCE
-{
-   FEED_ATR = 0,
-   FEED_TR,
-   FEED_CLOSE,
-   FEED_HL2,
-   FEED_HLC3,
-   FEED_OHLC4,
-   FEED_VOLUME,
-   FEED_TICKVOLUME
-};
-
-enum WINDOW_TYPE
-{
-   WIN_HANN = 0,
-   WIN_SINE,
-   WIN_SQRT_HANN,
-   WIN_KAISER
-};
-
-enum BAND_SHAPE
-{
-   BAND_RECT = 0,
-   BAND_GAUSS
-};
-
-enum OUTPUT_MODE
-{
-   OUT_SIN = 0,
-   OUT_COS,
-   OUT_PHASE_RAD,
-   OUT_PHASE_DEG
-};
-
-enum PAD_MODE
-{
-   PAD_ZERO = 0,
-   PAD_MIRROR
-};
-
-enum FORECAST_MODE
-{
-   FC_MIRROR = 0,
-   FC_LINREG
-};
-
 // ---------------- EA enums ----------------
 enum SIGNAL_MODE
 {
@@ -73,70 +26,14 @@ enum LOT_MODE
    LOT_RISK_PERCENT
 };
 
-// ---------------- Inputs: indicator name + parameters (mirrors indicator) ----------------
-input string       InpIndicatorName = "4EA-PhaseClock-CloseColorWave\\EA-FFT_PhaseClock_CLOSE_SINFLIP_LEAD_v1.5_ColorWave.ex5";
+// ---------------- Inputs: indicator handle ----------------
+input bool         UseChartIndicator   = true; // usa o indicador já anexado ao gráfico (mesmos inputs)
+input string       InpIndicatorShortName = "FFT_PhaseClock_CLOSE_SINFLIP_LEAD_v1.5_ColorWave";
+input string       InpIndicatorName    = "4EA-IND\\IND-FFT_PhaseClock_CLOSE_SINFLIP_LEAD_v1.5_ColorWave.ex5";
 
-input FEED_SOURCE  FeedSource     = FEED_OHLC4;
-input int          AtrPeriod      = 17;
-input int          FFTSize        = 512;
-input WINDOW_TYPE  WindowType     = WIN_SINE;
-input double       KaiserBeta     = 4;
-
-input bool         CausalWindow   = false;
-
-input bool         RemoveDC       = false;
-input bool         ApplyBandpass  = true;
-input int          CycleBars      = 17;
-input double       BandwidthPct   = 200.0;
-input BAND_SHAPE   BandShape      = BAND_RECT;
-
-input OUTPUT_MODE  OutputMode     = OUT_SIN;
-input bool         NormalizeAmp   = false;
-input double       PhaseOffsetDeg = 315;
-input double       LeadBars         = 0;
-input bool         LeadUseCycleOmega = true;
-input double       LeadOmegaSmooth  = 0.6;
-input int          LeadMinCycleBars = 9;
-input int          LeadMaxCycleBars = 67;
-input bool         InvertOutput   = true;
-input PAD_MODE     PadMode        = PAD_MIRROR;
-
-input bool         ZeroPhaseRT       = true;
-input FORECAST_MODE ForecastMode     = FC_MIRROR;
-input int          ForecastRegBars   = 32;
-input int          ForecastBars      = 0;
-input bool         ShowForecastLine  = false;
-input int          ForecastDrawBars  = 64;
-input color        ForecastLineColor = clrOrange;
-input int          ForecastLineWidth = 1;
-
-input bool         HoldPhaseOnLowAmp = true;
-input double       LowAmpEps      = 1e-9;
-
-input bool         ShowPhaseClock = false;
-input int          ClockXOffset   = 110;
-input int          ClockYOffset   = 55;
-input int          ClockRadius    = 26;
-
-input bool         ClockShowRingDots = true;
-input int          ClockRingDotsCount = 60;
-input int          ClockRingDotSize   = 10;
-input color        ClockRingColor     = clrSilver;
-
-input bool         ClockShowNumbers   = true;
-input int          ClockNumbersSize   = 10;
-input color        ClockNumbersColor  = clrSilver;
-
-input bool         ClockShowHand      = true;
-input int          ClockHandSegments  = 9;
-input int          ClockHandDotSize   = 12;
-input color        ClockHandColor     = clrRed;
-
-input bool         ClockShowCenterDot = true;
-input int          ClockCenterDotSize = 12;
-input color        ClockCenterColor   = clrWhite;
-
-input bool         ClockShowText      = true;
+// ---------------- Inputs: signal timeframe ----------------
+input bool            UseLowerTFSignals = true;            // usa sinais do timeframe inferior
+input ENUM_TIMEFRAMES SignalTimeframe  = PERIOD_M30;       // timeframe do gatilho (default M30)
 
 // ---------------- Inputs: trading & risk ----------------
 input SIGNAL_MODE  SignalMode          = SIG_TURN;
@@ -186,6 +83,9 @@ input int          TrailStepPoints     = 10;
 // ---------------- Internals ----------------
 int   gIndHandle = INVALID_HANDLE;
 datetime gLastBarTime = 0;
+bool  gOwnHandle = false;
+ENUM_TIMEFRAMES gSignalTF = PERIOD_CURRENT;
+datetime gLastSignalBarTime = 0;
 
 int MagicLeg1() { return MagicBase + 1; }
 int MagicLeg2() { return MagicBase + 2; }
@@ -265,11 +165,50 @@ bool IsNewBar()
    return false;
 }
 
+bool IsNewSignalBar()
+{
+   if(!UseLowerTFSignals)
+      return IsNewBar();
+
+   datetime t1 = (datetime)iTime(_Symbol, gSignalTF, 1); // barra FECHADA do TF de sinal
+   if(t1 == 0) return false;
+   if(t1 != gLastSignalBarTime)
+   {
+      gLastSignalBarTime = t1;
+      return true;
+   }
+   return false;
+}
+
 int Sign(double x)
 {
    if(x > 0.0) return 1;
    if(x < 0.0) return -1;
    return 0;
+}
+
+int FindChartIndicatorHandle(const string short_name)
+{
+   long chart_id = ChartID();
+   int windows = (int)ChartGetInteger(chart_id, CHART_WINDOWS_TOTAL);
+   if(windows <= 0) windows = 1;
+
+   for(int w=0; w<windows; w++)
+   {
+      int icount = ChartIndicatorsTotal(chart_id, w);
+      for(int i=0; i<icount; i++)
+      {
+         string name = ChartIndicatorName(chart_id, w, i);
+         if(name == short_name || StringFind(name, short_name) == 0)
+         {
+            int h = ChartIndicatorGet(chart_id, w, name);
+            if(h != INVALID_HANDLE)
+               return h;
+         }
+      }
+   }
+
+   return INVALID_HANDLE;
 }
 
 bool GetWave(double &v0, double &v1, double &v2, double &v3)
@@ -290,7 +229,7 @@ bool GetWave(double &v0, double &v1, double &v2, double &v3)
    return true;
 }
 
-int ComputeSignal(bool &is_buy, double &ref_stop_points)
+int ComputeSignal(bool &is_buy, double &ref_stop_points, bool use_closed)
 {
    // Returns: +1 buy, -1 sell, 0 none
    double v0, v1, v2, v3;
@@ -298,9 +237,9 @@ int ComputeSignal(bool &is_buy, double &ref_stop_points)
       return 0;
 
    // choose bar shifts
-   double a = UseClosedBarSignals ? v1 : v0;
-   double b = UseClosedBarSignals ? v2 : v1;
-   double c = UseClosedBarSignals ? v3 : v2;
+   double a = use_closed ? v1 : v0;
+   double b = use_closed ? v2 : v1;
+   double c = use_closed ? v3 : v2;
 
    double slope_now  = a - b;
    double slope_prev = b - c;
@@ -788,35 +727,39 @@ int OnInit()
 {
    ResetPlan();
 
-   gIndHandle = iCustom(_Symbol, _Period, InpIndicatorName,
-                        FeedSource, AtrPeriod, FFTSize, WindowType, KaiserBeta,
-                        CausalWindow,
-                        RemoveDC, ApplyBandpass, CycleBars, BandwidthPct, BandShape,
-                        OutputMode, NormalizeAmp, PhaseOffsetDeg, LeadBars, LeadUseCycleOmega, LeadOmegaSmooth,
-                        LeadMinCycleBars, LeadMaxCycleBars, InvertOutput, PadMode,
-                        ZeroPhaseRT, ForecastMode, ForecastRegBars, ForecastBars, ShowForecastLine, ForecastDrawBars,
-                        ForecastLineColor, ForecastLineWidth,
-                        HoldPhaseOnLowAmp, LowAmpEps,
-                        ShowPhaseClock, ClockXOffset, ClockYOffset, ClockRadius,
-                        ClockShowRingDots, ClockRingDotsCount, ClockRingDotSize, ClockRingColor,
-                        ClockShowNumbers, ClockNumbersSize, ClockNumbersColor,
-                        ClockShowHand, ClockHandSegments, ClockHandDotSize, ClockHandColor,
-                        ClockShowCenterDot, ClockCenterDotSize, ClockCenterColor,
-                        ClockShowText);
+   gIndHandle = INVALID_HANDLE;
+   gOwnHandle = false;
+
+   gSignalTF = UseLowerTFSignals ? SignalTimeframe : _Period;
+   if(gSignalTF == PERIOD_CURRENT)
+      gSignalTF = _Period;
+
+   if(UseChartIndicator && !UseLowerTFSignals)
+      gIndHandle = FindChartIndicatorHandle(InpIndicatorShortName);
 
    if(gIndHandle == INVALID_HANDLE)
    {
-      Print("Não foi possível criar handle do indicador: ", InpIndicatorName);
+      // Chama o indicador sem parâmetros para usar exatamente os defaults internos.
+      gIndHandle = iCustom(_Symbol, gSignalTF, InpIndicatorName);
+      if(gIndHandle != INVALID_HANDLE)
+         gOwnHandle = true;
+   }
+
+   if(gIndHandle == INVALID_HANDLE)
+   {
+      Print("Não foi possível criar handle do indicador. Nome: ", InpIndicatorName,
+            " | ShortName: ", InpIndicatorShortName);
       return INIT_FAILED;
    }
 
    gLastBarTime = (datetime)iTime(_Symbol, _Period, 0);
+   gLastSignalBarTime = (datetime)iTime(_Symbol, gSignalTF, 1);
    return INIT_SUCCEEDED;
 }
 
 void OnDeinit(const int reason)
 {
-   if(gIndHandle != INVALID_HANDLE)
+   if(gOwnHandle && gIndHandle != INVALID_HANDLE)
       IndicatorRelease(gIndHandle);
 }
 
@@ -824,15 +767,16 @@ void OnTick()
 {
    ManageExitsAndStops();
 
-   if(UseClosedBarSignals)
+   bool use_closed = (UseClosedBarSignals || UseLowerTFSignals);
+   if(use_closed)
    {
-      if(!IsNewBar())
+      if(!IsNewSignalBar())
          return;
    }
 
    bool buy=false;
    double stop_pts=0.0;
-   int sig = ComputeSignal(buy, stop_pts);
+   int sig = ComputeSignal(buy, stop_pts, use_closed);
    if(sig == 0) return;
 
    if(HasOurExposure())
