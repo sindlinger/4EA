@@ -196,6 +196,13 @@ int Sign(double x)
    return 0;
 }
 
+int NormalizeSignalMode(int mode)
+{
+   if(mode < 0 || mode > (int)SIG_SLOPE)
+      return (int)SIG_TURN;
+   return mode;
+}
+
 int FindChartIndicatorHandle(const string short_name)
 {
    long chart_id = ChartID();
@@ -325,8 +332,9 @@ int ComputeSignal(const int handle, bool &is_buy, double &ref_stop_points, bool 
    if(MathAbs(slope_prev) < MinSlopeAbs) slope_prev = 0.0;
 
    int sig = 0;
+   int mode = NormalizeSignalMode((int)SignalMode);
 
-   if(SignalMode == SIG_TURN)
+   if(mode == SIG_TURN)
    {
       int d_now  = Sign(slope_now);
       int d_prev = Sign(slope_prev);
@@ -334,7 +342,7 @@ int ComputeSignal(const int handle, bool &is_buy, double &ref_stop_points, bool 
       if(d_now > 0 && d_prev <= 0) sig = +1;
       else if(d_now < 0 && d_prev >= 0) sig = -1;
    }
-   else if(SignalMode == SIG_SLOPE)
+   else if(mode == SIG_SLOPE)
    {
       int d_now = Sign(slope_now);
       if(d_now > 0) sig = +1;
