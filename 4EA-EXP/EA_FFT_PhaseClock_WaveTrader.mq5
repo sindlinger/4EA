@@ -15,8 +15,7 @@ CTrade gTrade;
 // ---------------- EA enums ----------------
 enum SIGNAL_MODE
 {
-   SIG_TURN = 0,      // trade only when slope turns (down->up or up->down) on closed bars
-   SIG_SLOPE          // trade whenever slope is up/down on the last closed bar
+   SIG_TURN = 0       // trade only when slope turns (down->up or up->down) on closed bars
 };
 
 enum LOT_MODE
@@ -202,14 +201,12 @@ int Sign(double x)
 
 int NormalizeSignalMode(int mode)
 {
-   if(mode < 0 || mode > (int)SIG_SLOPE)
-      return (int)SIG_TURN;
-   return mode;
+   return (int)SIG_TURN;
 }
 
 int ApplyTurnDelay(const int handle, const bool use_closed, const int raw_sig)
 {
-   if(NormalizeSignalMode((int)SignalMode) != SIG_TURN || TurnDelayBars <= 0)
+   if(TurnDelayBars <= 0)
       return raw_sig;
 
    int dir_now = GetSlopeDir(handle, use_closed);
@@ -350,6 +347,8 @@ void UpdateWarmupStatusLabel()
 
    if(TurnDelayBars > 0 && gPendingDir != 0)
       msg = msg + StringFormat(" | Delay %d/%d", gPendingBars, TurnDelayBars);
+   if(UseLowerTFConfirm && gQueuedSig != 0)
+      msg = msg + StringFormat(" | Conf %s pendente", EnumToString(gConfirmTF));
 
    if(ObjectFind(0, gStatusObjName) < 0)
       ObjectCreate(0, gStatusObjName, OBJ_LABEL, 0, 0, 0);
