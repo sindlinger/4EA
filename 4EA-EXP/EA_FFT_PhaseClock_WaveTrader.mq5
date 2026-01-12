@@ -15,7 +15,8 @@ CTrade gTrade;
 // ---------------- EA enums ----------------
 enum CONFIRM_SOURCE
 {
-   CONFIRM_CURRENT_TF = 0,
+   CONFIRM_NONE = 0,
+   CONFIRM_CURRENT_TF,
    CONFIRM_AUX_TF
 };
 
@@ -31,9 +32,10 @@ input string       InpIndicatorShortName = "FFT_PhaseClock_CLOSE_SINFLIP_LEAD_v1
 input string       InpIndicatorName    = "4EA-IND\\IND-FFT_PhaseClock_CLOSE_SINFLIP_LEAD_v1.5_ColorWave.ex5";
 
 // ---------------- Inputs: confirmação ----------------
-input CONFIRM_SOURCE   ConfirmSource     = CONFIRM_AUX_TF;  // timeframe atual ou auxiliar
+input CONFIRM_SOURCE   ConfirmSource     = CONFIRM_AUX_TF;  // none / timeframe atual / auxiliar
 input ENUM_TIMEFRAMES  ConfirmTimeframe  = PERIOD_M30;      // usado quando ConfirmSource = auxiliar
 input int              ConfirmBarShift   = 1;              // barra de confirmacao (0,1,2...)
+input int              MainSignalShift   = 0;              // barra do sinal principal (0,1,2...)
 
 // ---------------- Inputs: warmup gating ----------------
 input bool         RequireWarmupChanges = true;            // exige mudanças de cor antes da 1a ordem
@@ -838,7 +840,9 @@ int OnInit()
    gOwnHandle = false;
    gOwnConfirmHandle = false;
 
-   gConfirmTF = (ConfirmSource == CONFIRM_AUX_TF ? ConfirmTimeframe : _Period);
+   gConfirmTF = _Period;
+   if(ConfirmSource == CONFIRM_AUX_TF)
+      gConfirmTF = ConfirmTimeframe;
    if(gConfirmTF == PERIOD_CURRENT)
       gConfirmTF = _Period;
 
@@ -860,25 +864,29 @@ int OnInit()
       return INIT_FAILED;
    }
 
-   if(gConfirmTF == _Period)
+   if(ConfirmSource != CONFIRM_NONE)
    {
-      gConfirmHandle = gIndHandle;
-   }
-   else
-   {
-      gConfirmHandle = iCustom(_Symbol, gConfirmTF, InpIndicatorName);
-      if(gConfirmHandle != INVALID_HANDLE)
-         gOwnConfirmHandle = true;
-   }
+      if(gConfirmTF == _Period)
+      {
+         gConfirmHandle = gIndHandle;
+      }
+      else
+      {
+         gConfirmHandle = iCustom(_Symbol, gConfirmTF, InpIndicatorName);
+         if(gConfirmHandle != INVALID_HANDLE)
+            gOwnConfirmHandle = true;
+      }
 
-   if(gConfirmHandle == INVALID_HANDLE)
-   {
-      Print("Não foi possível criar handle de confirmação no TF: ", (int)gConfirmTF);
-      return INIT_FAILED;
+      if(gConfirmHandle == INVALID_HANDLE)
+      {
+         Print("Não foi possível criar handle de confirmação no TF: ", (int)gConfirmTF);
+         return INIT_FAILED;
+      }
    }
 
    gLastBarTime = (datetime)iTime(_Symbol, _Period, 0);
-   gLastConfirmBarTime = (datetime)iTime(_Symbol, gConfirmTF, (ConfirmBarShift <= 0 ? 1 : ConfirmBarShift));
+   if(ConfirmSource != CONFIRM_NONE)
+      gLastConfirmBarTime = (datetime)iTime(_Symbol, gConfirmTF, (ConfirmBarShift <= 0 ? 1 : ConfirmBarShift));
    gWarmupChanges = 0;
    gPrevDir = 0;
    gWarmupReady = (!RequireWarmupChanges || WarmupColorChanges <= 0);
@@ -904,14 +912,16 @@ void OnTick()
    ManageExitsAndStops();
 
    bool new_main = IsNewBar();
+   int main_shift = MainSignalShift;
+   if(main_shift < 0) main_shift = 0;
 
-   UpdateWarmupState(gIndHandle, 0);
+   UpdateWarmupState(gIndHandle, main_shift);
 
    bool buy_tmp=false;
    double stop_tmp=0.0;
-   int raw_sig = ComputeSignal(gIndHandle, 0, buy_tmp, stop_tmp);
+   int raw_sig = ComputeSignal(gIndHandle, main_shift, buy_tmp, stop_tmp);
 
-   int dir_now = GetSlopeDir(gIndHandle, 0);
+   int dir_now = GetSlopeDir(gIndHandle, main_shift);
    if(dir_now == 0)
       gLastTurnSig = 0;
 
@@ -923,7 +933,7 @@ void OnTick()
          gLastTurnSig = raw_sig;
    }
 
-   int delayed_sig = ApplyTurnDelay(gIndHandle, 0, raw_sig, new_main);
+   int delayed_sig = ApplyTurnDelay(gIndHandle, main_shift, raw_sig, new_main);
    if(delayed_sig != 0 && (!RequireWarmupChanges || gWarmupReady))
       gQueuedSig = delayed_sig;
 
@@ -932,22 +942,26 @@ void OnTick()
 
    if(gQueuedSig == 0) return;
 
-   if(ConfirmBarShift > 0)
+   if(ConfirmSource != CONFIRM_NONE)
    {
-      if(!IsNewConfirmBar())
+      if(ConfirmBarShift > 0)
       {
-         gConfirmWaiting = true;
+         if(!IsNewConfirmBar())
+         {
+            gConfirmWaiting = true;
+            UpdateWarmupStatusLabel();
+            return;
+         }
+      }
+
+      int dir_conf = GetSlopeDir(gConfirmHandle, ConfirmBarShift);
+      if(dir_conf == 0 || dir_conf != gQueuedSig)
+      {
+         gQueuedSig = 0;
+         gConfirmWaiting = false;
          UpdateWarmupStatusLabel();
          return;
       }
-   }
-
-   int dir_conf = GetSlopeDir(gConfirmHandle, ConfirmBarShift);
-   if(dir_conf == 0 || dir_conf != gQueuedSig)
-   {
-      gConfirmWaiting = true;
-      UpdateWarmupStatusLabel();
-      return;
    }
 
    int sig = gQueuedSig;
