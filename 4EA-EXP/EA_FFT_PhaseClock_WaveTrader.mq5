@@ -954,14 +954,13 @@ void OnTick()
          }
       }
 
-      int dir_conf = GetSlopeDir(gConfirmHandle, ConfirmBarShift);
-      if(dir_conf == 0 || dir_conf != gQueuedSig)
-      {
-         gQueuedSig = 0;
-         gConfirmWaiting = false;
-         UpdateWarmupStatusLabel();
-         return;
-      }
+   int dir_conf = GetSlopeDir(gConfirmHandle, ConfirmBarShift);
+   if(dir_conf == 0 || dir_conf != gQueuedSig)
+   {
+      gConfirmWaiting = true;
+      UpdateWarmupStatusLabel();
+      return;
+   }
    }
 
    int sig = gQueuedSig;
