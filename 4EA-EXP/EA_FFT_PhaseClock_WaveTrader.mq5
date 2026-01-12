@@ -35,6 +35,10 @@ input string       InpIndicatorName    = "4EA-IND\\IND-FFT_PhaseClock_CLOSE_SINF
 input bool            UseLowerTFConfirm = true;            // confirma entradas/saídas no TF inferior (barra fechada)
 input ENUM_TIMEFRAMES SignalTimeframe   = PERIOD_M30;      // timeframe do gatilho (default M30)
 
+// ---------------- Inputs: warmup gating ----------------
+input bool         RequireWarmupChanges = true;            // exige mudanças de cor antes da 1a ordem
+input int          WarmupColorChanges   = 2;               // quantidade de mudanças de cor
+
 // ---------------- Inputs: trading & risk ----------------
 input SIGNAL_MODE  SignalMode          = SIG_TURN;
 input bool         UseClosedBarSignals = true;   // true = use bar 1/2/3; false = bar 0/1/2 (more repaint-prone)
@@ -88,6 +92,9 @@ datetime gLastConfirmBarTime = 0;
 bool  gOwnHandle = false;
 bool  gOwnConfirmHandle = false;
 ENUM_TIMEFRAMES gConfirmTF = PERIOD_CURRENT;
+int   gWarmupChanges = 0;
+int   gPrevDir = 0;
+bool  gWarmupReady = false;
 
 int MagicLeg1() { return MagicBase + 1; }
 int MagicLeg2() { return MagicBase + 2; }
@@ -231,20 +238,54 @@ bool GetWaveFromHandle(const int handle, double &v0, double &v1, double &v2, dou
    return true;
 }
 
-int ComputeSignal(const int handle, bool &is_buy, double &ref_stop_points, bool use_closed)
+bool GetSlopesFromHandle(const int handle, bool use_closed, double &slope_now, double &slope_prev)
 {
-   // Returns: +1 buy, -1 sell, 0 none
    double v0, v1, v2, v3;
    if(!GetWaveFromHandle(handle, v0, v1, v2, v3))
-      return 0;
+      return false;
 
-   // choose bar shifts
    double a = use_closed ? v1 : v0;
    double b = use_closed ? v2 : v1;
    double c = use_closed ? v3 : v2;
 
-   double slope_now  = a - b;
-   double slope_prev = b - c;
+   slope_now  = a - b;
+   slope_prev = b - c;
+   return true;
+}
+
+int GetSlopeDir(const int handle, bool use_closed)
+{
+   double slope_now=0.0, slope_prev=0.0;
+   if(!GetSlopesFromHandle(handle, use_closed, slope_now, slope_prev))
+      return 0;
+
+   if(MathAbs(slope_now) < MinSlopeAbs) slope_now = 0.0;
+   return Sign(slope_now);
+}
+
+void UpdateWarmupState(const int handle, bool use_closed)
+{
+   if(!RequireWarmupChanges || gWarmupReady)
+      return;
+
+   int dir_now = GetSlopeDir(handle, use_closed);
+   if(dir_now == 0)
+      return;
+
+   if(gPrevDir != 0 && dir_now != gPrevDir)
+      gWarmupChanges++;
+
+   gPrevDir = dir_now;
+   if(gWarmupChanges >= WarmupColorChanges)
+      gWarmupReady = true;
+}
+
+int ComputeSignal(const int handle, bool &is_buy, double &ref_stop_points, bool use_closed)
+{
+   // Returns: +1 buy, -1 sell, 0 none
+   double slope_now=0.0, slope_prev=0.0;
+   if(!GetSlopesFromHandle(handle, use_closed, slope_now, slope_prev))
+      return 0;
 
    if(MathAbs(slope_now) < MinSlopeAbs) slope_now = 0.0;
    if(MathAbs(slope_prev) < MinSlopeAbs) slope_prev = 0.0;
@@ -778,6 +819,9 @@ int OnInit()
 
    gLastBarTime = (datetime)iTime(_Symbol, _Period, 0);
    gLastConfirmBarTime = (datetime)iTime(_Symbol, gConfirmTF, 1);
+   gWarmupChanges = 0;
+   gPrevDir = 0;
+   gWarmupReady = (!RequireWarmupChanges || WarmupColorChanges <= 0);
    return INIT_SUCCEEDED;
 }
 
@@ -803,6 +847,8 @@ void OnTick()
       if(!IsNewBar())
          return;
    }
+
+   UpdateWarmupState(gIndHandle, UseClosedBarSignals);
 
    bool buy=false;
    double stop_pts=0.0;
@@ -833,6 +879,9 @@ void OnTick()
       }
       return;
    }
+
+   if(RequireWarmupChanges && !gWarmupReady)
+      return;
 
    OpenPlan(buy);
 }
