@@ -101,7 +101,6 @@ input bool         NormalizeAmp   = false;
 input VIEW_MODE    StartView      = VIEW_WAVE;
 input bool         QualityUsePhaseStability = true;
 input double       QualityOmegaTolPct = 40.0; // tolerancia % para |dPhase|-omega
-input bool         HideChartValues = true;   // esconde valores ao lado do nome no gráfico
 input double       PhaseOffsetDeg = 315;   // ajuste de fase aplicado na saída SIN/COS (graus)
 input double       LeadBars         = 0;   // avanço de fase (em "barras") para reduzir atraso; 0 = original
 input bool         LeadUseCycleOmega = true; // true: omega=2*pi/CycleBars (estável). false: omega por dPhase (experimental)
@@ -175,7 +174,7 @@ int      gLastViewMode = -1;
 bool     gQualityInit = false;
 double   gPrevPhaseQuality = 0.0;
 bool     gAuxBootstrapped = false;
-int      gChartShowIndValues = -1;
+string   gTitleName = INDICATOR_NAME + "_TITLE";
 
 // object prefix for forecast/clock objects (must be declared before helpers)
 string   gObjPrefix = INDICATOR_NAME + "_";
@@ -235,6 +234,27 @@ void DeleteViewButtons()
 {
    ObjectDelete(0, gPrevBtnName);
    ObjectDelete(0, gNextBtnName);
+}
+
+void EnsureTitleLabel()
+{
+   EnsureSubWin();
+   if(ObjectFind(0, gTitleName) < 0)
+      ObjectCreate(0, gTitleName, OBJ_LABEL, gSubWin, 0, 0);
+
+   ObjectSetInteger(0, gTitleName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, gTitleName, OBJPROP_XDISTANCE, 8);
+   ObjectSetInteger(0, gTitleName, OBJPROP_YDISTANCE, 2);
+   ObjectSetInteger(0, gTitleName, OBJPROP_COLOR, clrSilver);
+   ObjectSetInteger(0, gTitleName, OBJPROP_FONTSIZE, 9);
+   ObjectSetInteger(0, gTitleName, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, gTitleName, OBJPROP_HIDDEN, true);
+   ObjectSetString(0, gTitleName, OBJPROP_TEXT, INDICATOR_NAME);
+}
+
+void DeleteTitleLabel()
+{
+   ObjectDelete(0, gTitleName);
 }
 
 // ---------------- FFT helpers ----------------
@@ -1212,7 +1232,7 @@ void UpdatePhaseClock(const double phase)
 // ---------------- MT5 lifecycle ----------------
 int OnInit()
 {
-   IndicatorSetString(INDICATOR_SHORTNAME, INDICATOR_NAME);
+   IndicatorSetString(INDICATOR_SHORTNAME, "");
       SetIndexBuffer(0, gOut, INDICATOR_DATA);
    SetIndexBuffer(1, gColor, INDICATOR_COLOR_INDEX);
    SetIndexBuffer(2, gAmp, INDICATOR_DATA);
@@ -1232,9 +1252,6 @@ IndicatorSetInteger(INDICATOR_DIGITS, 8);
    PlotIndexSetInteger(0, PLOT_SHOW_DATA, true);
    PlotIndexSetInteger(1, PLOT_SHOW_DATA, true);
    PlotIndexSetInteger(2, PLOT_SHOW_DATA, true);
-   gChartShowIndValues = (int)ChartGetInteger(0, CHART_SHOW_INDICATOR_VALUES);
-   if(HideChartValues)
-      ChartSetInteger(0, CHART_SHOW_INDICATOR_VALUES, false);
 
    if(FeedSource == FEED_ATR)
    {
@@ -1259,8 +1276,7 @@ void OnDeinit(const int reason)
    DeleteForecastObjects();
    DeleteClockObjects();
    DeleteViewButtons();
-   if(HideChartValues && gChartShowIndValues >= 0)
-      ChartSetInteger(0, CHART_SHOW_INDICATOR_VALUES, gChartShowIndValues);
+   DeleteTitleLabel();
 }
 
 void BootstrapAuxBuffers(const int rates_total,
@@ -1340,6 +1356,7 @@ int OnCalculate(const int rates_total,
       gIsSeries = (time[0] > time[rates_total - 1]);
 
    EnsureViewButtons();
+   EnsureTitleLabel();
    if(gViewMode < VIEW_WAVE || gViewMode > VIEW_QUALITY)
       gViewMode = VIEW_WAVE;
    if(gViewMode != gLastViewMode)
