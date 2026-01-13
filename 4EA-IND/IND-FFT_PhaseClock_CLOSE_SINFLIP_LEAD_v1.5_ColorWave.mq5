@@ -108,12 +108,7 @@ input double       QualityOmegaTolPct = 40.0; // tolerancia % para |dPhase|-omeg
 input int          EmaPeriod      = 5;
 input bool         ShowEmaPlot    = true;
 input int          EmaShiftBars   = 0;    // desloca a EMA no tempo (barras)
-input group        "Filtro por Volatilidade (cor)"
-input bool         UseVolatilityGate = true;
-input int          VolPeriod      = 10;   // periodo da volatilidade da wave
-input double       VolMult        = 2.0;  // multiplicador da volatilidade
-input double       VolFloor       = 0.0;  // piso absoluto do limiar
-input group        ""
+input double       MinSlopePct    = 0.0;  // % da amplitude para mudar a cor (0 = comportamento atual)
 input double       PhaseOffsetDeg = 315;   // ajuste de fase aplicado na saída SIN/COS (graus)
 input double       LeadBars         = 0;   // avanço de fase (em "barras") para reduzir atraso; 0 = original
 input bool         LeadUseCycleOmega = true; // true: omega=2*pi/CycleBars (estável). false: omega por dPhase (experimental)
@@ -1245,38 +1240,6 @@ void UpdatePhaseClock(const double phase)
    }
 }
 
-double ComputeVolatility(const int rates_total)
-{
-   int p = VolPeriod;
-   if(p < 1) p = 1;
-   if(rates_total < 2) return 0.0;
-
-   double alpha = 2.0 / (double)(p + 1);
-   double ema = 0.0;
-   bool init = false;
-
-   int max_shift = MathMin(rates_total - 2, p);
-   for(int s = max_shift; s >= 1; --s)
-   {
-      double d = MathAbs(gOut[s] - gOut[s + 1]);
-      if(!init)
-      {
-         ema = d;
-         init = true;
-      }
-      else
-      {
-         ema = alpha * d + (1.0 - alpha) * ema;
-      }
-   }
-   double d0 = MathAbs(gOut[0] - gOut[1]);
-   if(init)
-      ema = alpha * d0 + (1.0 - alpha) * ema;
-   else
-      ema = d0;
-   return ema;
-}
-
 // ---------------- MT5 lifecycle ----------------
 int OnInit()
 {
@@ -1500,24 +1463,20 @@ int OnCalculate(const int rates_total,
          if(!MathIsValidNumber(prev)) prev = gOut[0];
          gEma[0] = alpha * gOut[0] + (1.0 - alpha) * prev;
       }
-      // Cor pela inclinação, com trava por volatilidade (sem tendência global)
+      // Cor pela inclinação com limiar percentual (da amplitude)
       if(rates_total >= 2)
       {
          double slope = gOut[0] - gOut[1];
-         if(!UseVolatilityGate)
-         {
+         double base = MathAbs(amp);
+         double thr = 0.0;
+         if(MinSlopePct > 0.0 && base > 0.0)
+            thr = base * (MinSlopePct / 100.0);
+
+         if(gColorState < 0)
             gColorState = (slope >= 0.0 ? 0 : 1);
-         }
-         else
-         {
-            double vol = ComputeVolatility(rates_total);
-            double thr = MathMax(VolFloor, vol * VolMult);
-            if(gColorState < 0)
-               gColorState = (slope >= 0.0 ? 0 : 1);
-            else if(MathAbs(slope) >= thr)
-               gColorState = (slope >= 0.0 ? 0 : 1);
-            // else mantém cor
-         }
+         else if(MathAbs(slope) >= thr)
+            gColorState = (slope >= 0.0 ? 0 : 1);
+         // se não passou o limiar, mantém a cor
          gColor[0] = (double)gColorState;
       }
       else
