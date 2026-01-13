@@ -104,10 +104,10 @@ input bool         QualityUsePhaseStability = true;
 input double       QualityOmegaTolPct = 40.0; // tolerancia % para |dPhase|-omega
 input group        "Histerese / Reversao Forte"
 input bool         UseHysteresisColors = true;
-input double       HysteresisAmpFrac = 0.05;   // fração da amplitude para travar virada
+input double       HysteresisAmpFrac = 0.03;   // fração da amplitude para travar virada
 input double       HysteresisMinSlope = 0.0;   // piso absoluto do limiar
 input double       HysteresisBoost = 1.5;      // aumenta limiar quando qualidade baixa
-input double       StrongTurnMult = 3.0;       // reversão forte ignora histerese
+input double       StrongTurnMult = 2.0;       // reversão forte ignora histerese
 input group        ""
 input double       PhaseOffsetDeg = 315;   // ajuste de fase aplicado na saída SIN/COS (graus)
 input double       LeadBars         = 0;   // avanço de fase (em "barras") para reduzir atraso; 0 = original
