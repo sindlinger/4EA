@@ -103,11 +103,11 @@ input VIEW_MODE    StartView      = VIEW_WAVE;
 input bool         QualityUsePhaseStability = true;
 input double       QualityOmegaTolPct = 40.0; // tolerancia % para |dPhase|-omega
 input group        "Histerese / Reversao Forte"
-input bool         UseHysteresisColors = true;
+input bool         UseHysteresisColors = false;
 input double       HysteresisAmpFrac = 0.03;   // fração da amplitude para travar virada
-input double       HysteresisMinSlope = 0.0;   // piso absoluto do limiar
-input double       HysteresisBoost = 1.5;      // aumenta limiar quando qualidade baixa
-input double       StrongTurnMult = 2.0;       // reversão forte ignora histerese
+input double       HysteresisMinSlope = 0.0174533;   // piso absoluto (≈ 1 grau em sin)
+input double       HysteresisBoost = 0.0;      // aumenta limiar quando qualidade baixa
+input double       StrongTurnMult = 1.0;       // reversão forte ignora histerese
 input group        ""
 input double       PhaseOffsetDeg = 315;   // ajuste de fase aplicado na saída SIN/COS (graus)
 input double       LeadBars         = 0;   // avanço de fase (em "barras") para reduzir atraso; 0 = original
@@ -1429,7 +1429,13 @@ int OnCalculate(const int rates_total,
          double slope = gOut[0] - gOut[1];
          if(!UseHysteresisColors)
          {
-            gColorState = (slope >= 0.0 ? 0 : 1);
+            double thr = MathAbs(HysteresisMinSlope);
+            if(gColorState < 0)
+               gColorState = (slope >= 0.0 ? 0 : 1);
+            else if(MathAbs(slope) < thr)
+               gColorState = gColorState;
+            else
+               gColorState = (slope >= 0.0 ? 0 : 1);
          }
          else
          {
