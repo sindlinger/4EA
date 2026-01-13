@@ -16,6 +16,7 @@
 #property indicator_type2   DRAW_LINE
 #property indicator_color2  clrDodgerBlue
 #property indicator_label2  "Amplitude"
+
 #property indicator_type3   DRAW_LINE
 #property indicator_color3  clrGold
 #property indicator_label3  "Qualidade"
@@ -101,6 +102,11 @@ input bool         NormalizeAmp   = false;
 input VIEW_MODE    StartView      = VIEW_WAVE;
 input bool         QualityUsePhaseStability = true;
 input double       QualityOmegaTolPct = 40.0; // tolerancia % para |dPhase|-omega
+input bool         UseHysteresisColors = true;
+input double       HysteresisAmpFrac = 0.05;   // fração da amplitude para travar virada
+input double       HysteresisMinSlope = 0.0;   // piso absoluto do limiar
+input double       HysteresisBoost = 1.5;      // aumenta limiar quando qualidade baixa
+input double       StrongTurnMult = 3.0;       // reversão forte ignora histerese
 input double       PhaseOffsetDeg = 315;   // ajuste de fase aplicado na saída SIN/COS (graus)
 input double       LeadBars         = 0;   // avanço de fase (em "barras") para reduzir atraso; 0 = original
 input bool         LeadUseCycleOmega = true; // true: omega=2*pi/CycleBars (estável). false: omega por dPhase (experimental)
@@ -171,6 +177,7 @@ bool     gMaskOk = true;
 bool     gWarnedBand = false;
 int      gViewMode = VIEW_WAVE;
 int      gLastViewMode = -1;
+int      gColorState = -1;
 bool     gQualityInit = false;
 double   gPrevPhaseQuality = 0.0;
 bool     gAuxBootstrapped = false;
@@ -1247,6 +1254,7 @@ IndicatorSetInteger(INDICATOR_DIGITS, 8);
    BuildWindowAndMask(N);
    gViewMode = (int)StartView;
    gLastViewMode = -1;
+   gColorState = -1;
    ApplyPlotView();
    gAuxBootstrapped = false;
    PlotIndexSetInteger(0, PLOT_SHOW_DATA, true);
@@ -1393,6 +1401,7 @@ int OnCalculate(const int rates_total,
       lastBandShape = BandShape;
       lastBand = ApplyBandpass;
       gQualityInit = false;
+      gColorState = -1;
       gAuxBootstrapped = false;
 
       PlotIndexSetInteger(0, PLOT_DRAW_BEGIN, gN);
@@ -1412,11 +1421,39 @@ int OnCalculate(const int rates_total,
       gOut[0] = outv;        // <-- somente barra 0
       gAmp[0] = amp;
       gQuality[0] = qual;
-      // Cor pela inclinação (comparando com a barra anterior já 'fechada')
+      // Cor com histerese adaptativa (sem atraso)
       if(rates_total >= 2)
-         gColor[0] = (gOut[0] >= gOut[1] ? 0.0 : 1.0);
+      {
+         double slope = gOut[0] - gOut[1];
+         if(!UseHysteresisColors)
+         {
+            gColorState = (slope >= 0.0 ? 0 : 1);
+         }
+         else
+         {
+            double thr = MathMax(HysteresisMinSlope, MathAbs(amp) * HysteresisAmpFrac);
+            if(HysteresisBoost > 0.0)
+               thr *= (1.0 + (1.0 - qual) * HysteresisBoost);
+            double strong_thr = thr * MathMax(1.0, StrongTurnMult);
+
+            if(gColorState < 0)
+               gColorState = (slope >= 0.0 ? 0 : 1);
+            else if(slope >= strong_thr)
+               gColorState = 0;
+            else if(slope <= -strong_thr)
+               gColorState = 1;
+            else if(gColorState == 0 && slope < -thr)
+               gColorState = 1;
+            else if(gColorState == 1 && slope > thr)
+               gColorState = 0;
+         }
+         gColor[0] = (double)gColorState;
+      }
       else
+      {
+         gColorState = 0;
          gColor[0] = 0.0;
+      }
 
       UpdatePhaseClock(ph);
    }
