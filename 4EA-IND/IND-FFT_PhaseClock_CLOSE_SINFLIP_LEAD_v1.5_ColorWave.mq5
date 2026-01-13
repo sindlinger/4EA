@@ -108,6 +108,12 @@ input double       QualityOmegaTolPct = 40.0; // tolerancia % para |dPhase|-omeg
 input int          EmaPeriod      = 5;
 input bool         ShowEmaPlot    = true;
 input int          EmaShiftBars   = 0;    // desloca a EMA no tempo (barras)
+input group        "Filtro por Volatilidade (cor)"
+input bool         UseVolatilityGate = true;
+input int          VolPeriod      = 10;   // periodo da volatilidade da wave
+input double       VolMult        = 2.0;  // multiplicador da volatilidade
+input double       VolFloor       = 0.0;  // piso absoluto do limiar
+input group        ""
 input double       PhaseOffsetDeg = 315;   // ajuste de fase aplicado na saída SIN/COS (graus)
 input double       LeadBars         = 0;   // avanço de fase (em "barras") para reduzir atraso; 0 = original
 input bool         LeadUseCycleOmega = true; // true: omega=2*pi/CycleBars (estável). false: omega por dPhase (experimental)
@@ -179,6 +185,7 @@ bool     gMaskOk = true;
 bool     gWarnedBand = false;
 int      gViewMode = VIEW_WAVE;
 int      gLastViewMode = -1;
+int      gColorState = -1;
 bool     gQualityInit = false;
 double   gPrevPhaseQuality = 0.0;
 bool     gAuxBootstrapped = false;
@@ -1238,6 +1245,38 @@ void UpdatePhaseClock(const double phase)
    }
 }
 
+double ComputeVolatility(const int rates_total)
+{
+   int p = VolPeriod;
+   if(p < 1) p = 1;
+   if(rates_total < 2) return 0.0;
+
+   double alpha = 2.0 / (double)(p + 1);
+   double ema = 0.0;
+   bool init = false;
+
+   int max_shift = MathMin(rates_total - 2, p);
+   for(int s = max_shift; s >= 1; --s)
+   {
+      double d = MathAbs(gOut[s] - gOut[s + 1]);
+      if(!init)
+      {
+         ema = d;
+         init = true;
+      }
+      else
+      {
+         ema = alpha * d + (1.0 - alpha) * ema;
+      }
+   }
+   double d0 = MathAbs(gOut[0] - gOut[1]);
+   if(init)
+      ema = alpha * d0 + (1.0 - alpha) * ema;
+   else
+      ema = d0;
+   return ema;
+}
+
 // ---------------- MT5 lifecycle ----------------
 int OnInit()
 {
@@ -1258,6 +1297,7 @@ IndicatorSetInteger(INDICATOR_DIGITS, 8);
    BuildWindowAndMask(N);
    gViewMode = (int)StartView;
    gLastViewMode = -1;
+   gColorState = -1;
    ApplyPlotView();
    gAuxBootstrapped = false;
    PlotIndexSetInteger(0, PLOT_SHOW_DATA, true);
@@ -1429,6 +1469,7 @@ int OnCalculate(const int rates_total,
       lastEmaPeriod = EmaPeriod;
       lastEmaShift = EmaShiftBars;
       gQualityInit = false;
+      gColorState = -1;
       gAuxBootstrapped = false;
 
       PlotIndexSetInteger(0, PLOT_DRAW_BEGIN, gN);
@@ -1459,11 +1500,31 @@ int OnCalculate(const int rates_total,
          if(!MathIsValidNumber(prev)) prev = gOut[0];
          gEma[0] = alpha * gOut[0] + (1.0 - alpha) * prev;
       }
-      // Cor pela inclinação (comparando com a barra anterior já 'fechada')
+      // Cor pela inclinação, com trava por volatilidade (sem tendência global)
       if(rates_total >= 2)
-         gColor[0] = (gOut[0] >= gOut[1] ? 0.0 : 1.0);
+      {
+         double slope = gOut[0] - gOut[1];
+         if(!UseVolatilityGate)
+         {
+            gColorState = (slope >= 0.0 ? 0 : 1);
+         }
+         else
+         {
+            double vol = ComputeVolatility(rates_total);
+            double thr = MathMax(VolFloor, vol * VolMult);
+            if(gColorState < 0)
+               gColorState = (slope >= 0.0 ? 0 : 1);
+            else if(MathAbs(slope) >= thr)
+               gColorState = (slope >= 0.0 ? 0 : 1);
+            // else mantém cor
+         }
+         gColor[0] = (double)gColorState;
+      }
       else
+      {
+         gColorState = 0;
          gColor[0] = 0.0;
+      }
 
       UpdatePhaseClock(ph);
    }
