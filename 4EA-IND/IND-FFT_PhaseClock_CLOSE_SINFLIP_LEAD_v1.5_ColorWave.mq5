@@ -101,6 +101,7 @@ input bool         NormalizeAmp   = false;
 input VIEW_MODE    StartView      = VIEW_WAVE;
 input bool         QualityUsePhaseStability = true;
 input double       QualityOmegaTolPct = 40.0; // tolerancia % para |dPhase|-omega
+input bool         HideChartValues = true;   // esconde valores ao lado do nome no gráfico
 input double       PhaseOffsetDeg = 315;   // ajuste de fase aplicado na saída SIN/COS (graus)
 input double       LeadBars         = 0;   // avanço de fase (em "barras") para reduzir atraso; 0 = original
 input bool         LeadUseCycleOmega = true; // true: omega=2*pi/CycleBars (estável). false: omega por dPhase (experimental)
@@ -174,6 +175,7 @@ int      gLastViewMode = -1;
 bool     gQualityInit = false;
 double   gPrevPhaseQuality = 0.0;
 bool     gAuxBootstrapped = false;
+int      gChartShowIndValues = -1;
 
 // object prefix for forecast/clock objects (must be declared before helpers)
 string   gObjPrefix = INDICATOR_NAME + "_";
@@ -1227,9 +1229,12 @@ IndicatorSetInteger(INDICATOR_DIGITS, 8);
    gLastViewMode = -1;
    ApplyPlotView();
    gAuxBootstrapped = false;
-   PlotIndexSetInteger(0, PLOT_SHOW_DATA, false);
-   PlotIndexSetInteger(1, PLOT_SHOW_DATA, false);
-   PlotIndexSetInteger(2, PLOT_SHOW_DATA, false);
+   PlotIndexSetInteger(0, PLOT_SHOW_DATA, true);
+   PlotIndexSetInteger(1, PLOT_SHOW_DATA, true);
+   PlotIndexSetInteger(2, PLOT_SHOW_DATA, true);
+   gChartShowIndValues = (int)ChartGetInteger(0, CHART_SHOW_INDICATOR_VALUES);
+   if(HideChartValues)
+      ChartSetInteger(0, CHART_SHOW_INDICATOR_VALUES, false);
 
    if(FeedSource == FEED_ATR)
    {
@@ -1254,6 +1259,8 @@ void OnDeinit(const int reason)
    DeleteForecastObjects();
    DeleteClockObjects();
    DeleteViewButtons();
+   if(HideChartValues && gChartShowIndValues >= 0)
+      ChartSetInteger(0, CHART_SHOW_INDICATOR_VALUES, gChartShowIndValues);
 }
 
 void BootstrapAuxBuffers(const int rates_total,
