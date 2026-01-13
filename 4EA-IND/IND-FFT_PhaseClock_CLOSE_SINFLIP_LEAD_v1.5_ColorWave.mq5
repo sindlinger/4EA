@@ -170,6 +170,7 @@ double   gPrevPhaseForOmega = 0.0;
 bool     gMaskOk = true;
 bool     gWarnedBand = false;
 int      gViewMode = VIEW_WAVE;
+int      gLastViewMode = -1;
 bool     gQualityInit = false;
 double   gPrevPhaseQuality = 0.0;
 
@@ -1214,6 +1215,7 @@ IndicatorSetInteger(INDICATOR_DIGITS, 8);
    int N = NextPow2(MathMax(32, FFTSize));
    BuildWindowAndMask(N);
    gViewMode = (int)StartView;
+   gLastViewMode = -1;
    ApplyPlotView();
    PlotIndexSetInteger(0, PLOT_SHOW_DATA, false);
    PlotIndexSetInteger(1, PLOT_SHOW_DATA, false);
@@ -1273,6 +1275,13 @@ int OnCalculate(const int rates_total,
       gIsSeries = (time[0] > time[rates_total - 1]);
 
    EnsureViewButtons();
+   if(gViewMode < VIEW_WAVE || gViewMode > VIEW_QUALITY)
+      gViewMode = VIEW_WAVE;
+   if(gViewMode != gLastViewMode)
+   {
+      ApplyPlotView();
+      gLastViewMode = gViewMode;
+   }
 
    if(rates_total < N || N <= 32)
    {
