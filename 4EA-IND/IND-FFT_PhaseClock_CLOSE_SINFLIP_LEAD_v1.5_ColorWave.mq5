@@ -108,7 +108,7 @@ input double       QualityOmegaTolPct = 40.0; // tolerancia % para |dPhase|-omeg
 input int          EmaPeriod      = 5;
 input bool         ShowEmaPlot    = true;
 input int          EmaShiftBars   = 0;    // desloca a EMA no tempo (barras)
-input double       MinSlopePct    = 0.0;  // % da amplitude para mudar a cor (0 = comportamento atual)
+input double       MinSlopePct    = 2.0;  // % da amplitude para mudar a cor (0 = comportamento atual)
 input double       PhaseOffsetDeg = 315;   // ajuste de fase aplicado na saída SIN/COS (graus)
 input double       LeadBars         = 0;   // avanço de fase (em "barras") para reduzir atraso; 0 = original
 input bool         LeadUseCycleOmega = true; // true: omega=2*pi/CycleBars (estável). false: omega por dPhase (experimental)
