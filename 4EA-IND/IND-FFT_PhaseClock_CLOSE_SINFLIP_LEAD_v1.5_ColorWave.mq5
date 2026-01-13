@@ -200,9 +200,9 @@ void EnsureViewButtons()
    if(ObjectFind(0, gPrevBtnName) < 0)
    {
       ObjectCreate(0, gPrevBtnName, OBJ_BUTTON, gSubWin, 0, 0);
-      ObjectSetInteger(0, gPrevBtnName, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+      ObjectSetInteger(0, gPrevBtnName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
       ObjectSetInteger(0, gPrevBtnName, OBJPROP_XDISTANCE, 8);
-      ObjectSetInteger(0, gPrevBtnName, OBJPROP_YDISTANCE, 8);
+      ObjectSetInteger(0, gPrevBtnName, OBJPROP_YDISTANCE, 18);
       ObjectSetInteger(0, gPrevBtnName, OBJPROP_FONTSIZE, 8);
       ObjectSetInteger(0, gPrevBtnName, OBJPROP_COLOR, clrSilver);
       ObjectSetInteger(0, gPrevBtnName, OBJPROP_BORDER_COLOR, clrGray);
@@ -214,9 +214,9 @@ void EnsureViewButtons()
    if(ObjectFind(0, gNextBtnName) < 0)
    {
       ObjectCreate(0, gNextBtnName, OBJ_BUTTON, gSubWin, 0, 0);
-      ObjectSetInteger(0, gNextBtnName, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+      ObjectSetInteger(0, gNextBtnName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
       ObjectSetInteger(0, gNextBtnName, OBJPROP_XDISTANCE, 52);
-      ObjectSetInteger(0, gNextBtnName, OBJPROP_YDISTANCE, 8);
+      ObjectSetInteger(0, gNextBtnName, OBJPROP_YDISTANCE, 18);
       ObjectSetInteger(0, gNextBtnName, OBJPROP_FONTSIZE, 8);
       ObjectSetInteger(0, gNextBtnName, OBJPROP_COLOR, clrSilver);
       ObjectSetInteger(0, gNextBtnName, OBJPROP_BORDER_COLOR, clrGray);
@@ -1215,6 +1215,9 @@ IndicatorSetInteger(INDICATOR_DIGITS, 8);
    BuildWindowAndMask(N);
    gViewMode = (int)StartView;
    ApplyPlotView();
+   PlotIndexSetInteger(0, PLOT_SHOW_DATA, false);
+   PlotIndexSetInteger(1, PLOT_SHOW_DATA, false);
+   PlotIndexSetInteger(2, PLOT_SHOW_DATA, false);
 
    if(FeedSource == FEED_ATR)
    {
