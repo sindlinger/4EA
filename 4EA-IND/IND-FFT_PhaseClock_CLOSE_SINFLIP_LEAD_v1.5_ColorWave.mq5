@@ -107,6 +107,7 @@ input bool         QualityUsePhaseStability = true;
 input double       QualityOmegaTolPct = 40.0; // tolerancia % para |dPhase|-omega
 input int          EmaPeriod      = 5;
 input bool         ShowEmaPlot    = true;
+input int          EmaShiftBars   = 0;    // desloca a EMA no tempo (barras)
 input double       PhaseOffsetDeg = 315;   // ajuste de fase aplicado na saída SIN/COS (graus)
 input double       LeadBars         = 0;   // avanço de fase (em "barras") para reduzir atraso; 0 = original
 input bool         LeadUseCycleOmega = true; // true: omega=2*pi/CycleBars (estável). false: omega por dPhase (experimental)
@@ -1278,6 +1279,7 @@ IndicatorSetInteger(INDICATOR_DIGITS, 8);
    PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, N);
    PlotIndexSetInteger(2, PLOT_DRAW_BEGIN, N);
    PlotIndexSetInteger(3, PLOT_DRAW_BEGIN, N);
+   PlotIndexSetInteger(3, PLOT_SHIFT, EmaShiftBars);
    return INIT_SUCCEEDED;
 }
 
@@ -1408,10 +1410,11 @@ int OnCalculate(const int rates_total,
    static BAND_SHAPE lastBandShape = (BAND_SHAPE)-1;
    static bool lastBand = false;
    static int lastEmaPeriod = -1;
+   static int lastEmaShift = 0;
 
    if(lastFFT != FFTSize || lastCycle != CycleBars || lastWin != WindowType ||
       lastBW != BandwidthPct || lastBeta != KaiserBeta || lastBandShape != BandShape || lastBand != ApplyBandpass ||
-      lastEmaPeriod != EmaPeriod)
+      lastEmaPeriod != EmaPeriod || lastEmaShift != EmaShiftBars)
    {
       int NN = NextPow2(MathMax(32, FFTSize));
       BuildWindowAndMask(NN);
@@ -1424,6 +1427,7 @@ int OnCalculate(const int rates_total,
       lastBandShape = BandShape;
       lastBand = ApplyBandpass;
       lastEmaPeriod = EmaPeriod;
+      lastEmaShift = EmaShiftBars;
       gQualityInit = false;
       gAuxBootstrapped = false;
 
@@ -1431,6 +1435,7 @@ int OnCalculate(const int rates_total,
       PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, gN);
       PlotIndexSetInteger(2, PLOT_DRAW_BEGIN, gN);
       PlotIndexSetInteger(3, PLOT_DRAW_BEGIN, gN);
+      PlotIndexSetInteger(3, PLOT_SHIFT, EmaShiftBars);
    }
 
    if(!gAuxBootstrapped)
