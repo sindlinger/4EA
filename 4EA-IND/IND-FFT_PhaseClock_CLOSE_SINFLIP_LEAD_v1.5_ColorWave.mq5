@@ -173,6 +173,7 @@ int      gViewMode = VIEW_WAVE;
 int      gLastViewMode = -1;
 bool     gQualityInit = false;
 double   gPrevPhaseQuality = 0.0;
+bool     gAuxBootstrapped = false;
 
 // object prefix for forecast/clock objects (must be declared before helpers)
 string   gObjPrefix = INDICATOR_NAME + "_";
@@ -493,6 +494,7 @@ double TrueRangeAtShift(const double &high[], const double &low[], const double 
 
 bool FetchSourceSeries(const int total, const double &open[], const double &high[], const double &low[], const double &close[],
                        const long &tick_volume[], const long &volume_arr[],
+                       const int base_shift,
                        double &src_series[], const int needN)
 {
    ArrayResize(src_series, needN);
@@ -505,18 +507,19 @@ bool FetchSourceSeries(const int total, const double &open[], const double &high
          gAtrHandle = iATR(_Symbol, _Period, AtrPeriod);
          if(gAtrHandle == INVALID_HANDLE) return false;
       }
-      int got = CopyBuffer(gAtrHandle, 0, 0, needN, src_series);
+      int got = CopyBuffer(gAtrHandle, 0, base_shift, needN, src_series);
       return (got > 0);
    }
 
    for(int i=0; i<needN; i++)
    {
-      int idx = BarIndexFromShift(i, total);
+      int shift = i + base_shift;
+      int idx = BarIndexFromShift(shift, total);
 
       double v = 0.0;
       switch(FeedSource)
       {
-         case FEED_TR:       v = TrueRangeAtShift(high, low, close, i, total); break;
+         case FEED_TR:       v = TrueRangeAtShift(high, low, close, shift, total); break;
          case FEED_CLOSE:    v = close[idx]; break;
          case FEED_HL2:      v = (high[idx] + low[idx]) * 0.5; break;
          case FEED_HLC3:     v = (high[idx] + low[idx] + close[idx]) / 3.0; break;
@@ -533,13 +536,14 @@ bool FetchSourceSeries(const int total, const double &open[], const double &high
 bool ComputeBar0Phase_Causal(const int total,
                       const double &open[], const double &high[], const double &low[], const double &close[],
                       const long &tick_volume[], const long &volume_arr[],
+                      const int base_shift,
                       double &out_value, double &out_phase, double &out_amp, double &out_quality)
 {
    int N = gN;
    if(N <= 32) return false;
 
    double src_series[];
-   if(!FetchSourceSeries(total, open, high, low, close, tick_volume, volume_arr, src_series, N))
+   if(!FetchSourceSeries(total, open, high, low, close, tick_volume, volume_arr, base_shift, src_series, N))
       return false;
 
    double re[], im[];
@@ -750,6 +754,7 @@ double ForecastSampleFuture(const double &src_series[], const int len, const int
 bool ComputeBar0Phase_ZeroPhase(const int total,
                                 const double &open[], const double &high[], const double &low[], const double &close[],
                                 const long &tick_volume[], const long &volume_arr[],
+                                const int base_shift,
                                 double &out_value, double &out_phase, double &out_amp, double &out_quality,
                                 double &out_future[], int &out_future_count)
 {
@@ -765,7 +770,7 @@ bool ComputeBar0Phase_ZeroPhase(const int total,
    ArrayResize(out_future, fcount);
 
    double src_series[];
-   if(!FetchSourceSeries(total, open, high, low, close, tick_volume, volume_arr, src_series, N))
+   if(!FetchSourceSeries(total, open, high, low, close, tick_volume, volume_arr, base_shift, src_series, N))
       return false;
 
    // precompute regression parameters if needed
@@ -964,27 +969,31 @@ bool ComputeBar0Phase(const int total,
                       const datetime &time[],
                       const double &open[], const double &high[], const double &low[], const double &close[],
                       const long &tick_volume[], const long &volume_arr[],
+                      const int base_shift,
                       double &out_value, double &out_phase, double &out_amp, double &out_quality)
 {
    if(!ZeroPhaseRT)
    {
       DeleteForecastObjects();
-      return ComputeBar0Phase_Causal(total, open, high, low, close, tick_volume, volume_arr, out_value, out_phase, out_amp, out_quality);
+      return ComputeBar0Phase_Causal(total, open, high, low, close, tick_volume, volume_arr, base_shift, out_value, out_phase, out_amp, out_quality);
    }
 
    double future_vals[];
    int future_count = 0;
-   bool ok = ComputeBar0Phase_ZeroPhase(total, open, high, low, close, tick_volume, volume_arr,
+   bool ok = ComputeBar0Phase_ZeroPhase(total, open, high, low, close, tick_volume, volume_arr, base_shift,
                                        out_value, out_phase, out_amp, out_quality, future_vals, future_count);
    if(!ok)
    {
-      DeleteForecastObjects();
+      if(base_shift == 0) DeleteForecastObjects();
       return false;
    }
 
    // time[] comes in chronological order (0=oldest ... total-1=newest) in this indicator.
-   datetime t0 = time[BarIndexFromShift(0, total)];
-   UpdateForecastObjects(t0, out_value, future_vals, future_count);
+   if(base_shift == 0)
+   {
+      datetime t0 = time[BarIndexFromShift(0, total)];
+      UpdateForecastObjects(t0, out_value, future_vals, future_count);
+   }
    return true;
 }
 
@@ -1217,6 +1226,7 @@ IndicatorSetInteger(INDICATOR_DIGITS, 8);
    gViewMode = (int)StartView;
    gLastViewMode = -1;
    ApplyPlotView();
+   gAuxBootstrapped = false;
    PlotIndexSetInteger(0, PLOT_SHOW_DATA, false);
    PlotIndexSetInteger(1, PLOT_SHOW_DATA, false);
    PlotIndexSetInteger(2, PLOT_SHOW_DATA, false);
@@ -1244,6 +1254,54 @@ void OnDeinit(const int reason)
    DeleteForecastObjects();
    DeleteClockObjects();
    DeleteViewButtons();
+}
+
+void BootstrapAuxBuffers(const int rates_total,
+                         const datetime& time[],
+                         const double& open[],
+                         const double& high[],
+                         const double& low[],
+                         const double& close[],
+                         const long& tick_volume[],
+                         const long& volume[])
+{
+   int N = gN;
+   if(rates_total < N || N <= 32)
+      return;
+
+   int hist = MathMin(rates_total - 1, gN * 4);
+   if(hist < 1) return;
+
+   double save_last_phase = gLastPhase;
+   bool   save_omega_init = gOmegaInit;
+   double save_prev_phase = gPrevPhaseForOmega;
+   double save_lead_omega = gLeadOmega;
+   bool   save_q_init = gQualityInit;
+   double save_prev_q = gPrevPhaseQuality;
+
+   gLastPhase = 0.0;
+   gOmegaInit = false;
+   gPrevPhaseForOmega = 0.0;
+   gLeadOmega = 0.0;
+   gQualityInit = false;
+   gPrevPhaseQuality = 0.0;
+
+   for(int shift = hist; shift >= 0; --shift)
+   {
+      double outv=0.0, ph=0.0, amp=0.0, qual=0.0;
+      if(ComputeBar0Phase(rates_total, time, open, high, low, close, tick_volume, volume, shift, outv, ph, amp, qual))
+      {
+         gAmp[shift] = amp;
+         gQuality[shift] = qual;
+      }
+   }
+
+   gLastPhase = save_last_phase;
+   gOmegaInit = save_omega_init;
+   gPrevPhaseForOmega = save_prev_phase;
+   gLeadOmega = save_lead_omega;
+   gQualityInit = save_q_init;
+   gPrevPhaseQuality = save_prev_q;
 }
 
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
@@ -1311,14 +1369,21 @@ int OnCalculate(const int rates_total,
       lastBandShape = BandShape;
       lastBand = ApplyBandpass;
       gQualityInit = false;
+      gAuxBootstrapped = false;
 
       PlotIndexSetInteger(0, PLOT_DRAW_BEGIN, gN);
       PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, gN);
       PlotIndexSetInteger(2, PLOT_DRAW_BEGIN, gN);
    }
 
+   if(!gAuxBootstrapped)
+   {
+      BootstrapAuxBuffers(rates_total, time, open, high, low, close, tick_volume, volume);
+      gAuxBootstrapped = true;
+   }
+
    double outv=0.0, ph=0.0, amp=0.0, qual=0.0;
-   if(ComputeBar0Phase(rates_total, time, open, high, low, close, tick_volume, volume, outv, ph, amp, qual))
+   if(ComputeBar0Phase(rates_total, time, open, high, low, close, tick_volume, volume, 0, outv, ph, amp, qual))
    {
       gOut[0] = outv;        // <-- somente barra 0
       gAmp[0] = amp;
