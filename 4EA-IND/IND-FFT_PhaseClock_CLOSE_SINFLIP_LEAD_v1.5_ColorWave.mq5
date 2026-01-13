@@ -8,21 +8,11 @@
 #property strict
 #property indicator_separate_window
 #define INDICATOR_NAME "FFT_PhaseClock_CLOSE_SINFLIP_LEAD_v1.5_ColorWave"
-#property indicator_buffers 5
-#property indicator_plots   4
+#property indicator_buffers 2
+#property indicator_plots   1
 #property indicator_type1   DRAW_COLOR_LINE
 #property indicator_color1  clrLimeGreen, clrRed
 #property indicator_label1  INDICATOR_NAME
-#property indicator_type2   DRAW_LINE
-#property indicator_color2  clrDodgerBlue
-#property indicator_label2  "Amplitude"
-
-#property indicator_type3   DRAW_LINE
-#property indicator_color3  clrGold
-#property indicator_label3  "Qualidade"
-#property indicator_type4   DRAW_LINE
-#property indicator_color4  clrAqua
-#property indicator_label4  "EMA"
 
 
 
@@ -65,13 +55,6 @@ enum OUTPUT_MODE
    OUT_PHASE_DEG
 };
 
-enum VIEW_MODE
-{
-   VIEW_WAVE = 0,
-   VIEW_AMPLITUDE,
-   VIEW_QUALITY
-};
-
 enum PAD_MODE
 {
    PAD_ZERO = 0,
@@ -102,13 +85,6 @@ input BAND_SHAPE   BandShape      = BAND_RECT;
 
 input OUTPUT_MODE  OutputMode     = OUT_SIN;
 input bool         NormalizeAmp   = false;
-input VIEW_MODE    StartView      = VIEW_WAVE;
-input bool         QualityUsePhaseStability = true;
-input double       QualityOmegaTolPct = 40.0; // tolerancia % para |dPhase|-omega
-input int          EmaPeriod      = 5;
-input bool         ShowEmaPlot    = true;
-input int          EmaShiftBars   = 0;    // desloca a EMA no tempo (barras)
-input double       MinSlopePct    = 2.0;  // % da amplitude para mudar a cor (0 = comportamento atual)
 input double       PhaseOffsetDeg = 315;   // ajuste de fase aplicado na saída SIN/COS (graus)
 input double       LeadBars         = 0;   // avanço de fase (em "barras") para reduzir atraso; 0 = original
 input bool         LeadUseCycleOmega = true; // true: omega=2*pi/CycleBars (estável). false: omega por dPhase (experimental)
@@ -162,9 +138,6 @@ input bool         ClockShowText      = true;
 // ---------------- buffers ----------------
 double gOut[];
 double gColor[]; // 0=up (green), 1=down (red)
-double gAmp[];
-double gQuality[];
-double gEma[];
 
 // ---------------- internals ----------------
 int      gAtrHandle = INVALID_HANDLE;
@@ -178,18 +151,9 @@ double   gLeadOmega = 0.0;
 double   gPrevPhaseForOmega = 0.0;
 bool     gMaskOk = true;
 bool     gWarnedBand = false;
-int      gViewMode = VIEW_WAVE;
-int      gLastViewMode = -1;
-int      gColorState = -1;
-bool     gQualityInit = false;
-double   gPrevPhaseQuality = 0.0;
-bool     gAuxBootstrapped = false;
-string   gTitleName = INDICATOR_NAME + "_TITLE";
 
 // object prefix for forecast/clock objects (must be declared before helpers)
 string   gObjPrefix = INDICATOR_NAME + "_";
-string   gPrevBtnName = INDICATOR_NAME + "_PREV";
-string   gNextBtnName = INDICATOR_NAME + "_NEXT";
 
 // forecast segments (objects)
 int      gForecastSegs = 0;
@@ -198,75 +162,6 @@ int      gForecastSegs = 0;
 int      gSubWin = -1;
 // Detecta se os arrays de entrada chegam como series (0 = barra atual)
 bool     gIsSeries = false;
-
-// ---------------- UI helpers ----------------
-void ApplyPlotView()
-{
-   PlotIndexSetInteger(0, PLOT_DRAW_TYPE, gViewMode == VIEW_WAVE ? DRAW_COLOR_LINE : DRAW_NONE);
-   PlotIndexSetInteger(1, PLOT_DRAW_TYPE, gViewMode == VIEW_AMPLITUDE ? DRAW_LINE : DRAW_NONE);
-   PlotIndexSetInteger(2, PLOT_DRAW_TYPE, gViewMode == VIEW_QUALITY ? DRAW_LINE : DRAW_NONE);
-   PlotIndexSetInteger(3, PLOT_DRAW_TYPE, (gViewMode == VIEW_WAVE && ShowEmaPlot) ? DRAW_LINE : DRAW_NONE);
-}
-
-void EnsureViewButtons()
-{
-   EnsureSubWin();
-   if(ObjectFind(0, gPrevBtnName) < 0)
-   {
-      ObjectCreate(0, gPrevBtnName, OBJ_BUTTON, gSubWin, 0, 0);
-      ObjectSetInteger(0, gPrevBtnName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-      ObjectSetInteger(0, gPrevBtnName, OBJPROP_XDISTANCE, 8);
-      ObjectSetInteger(0, gPrevBtnName, OBJPROP_YDISTANCE, 18);
-      ObjectSetInteger(0, gPrevBtnName, OBJPROP_FONTSIZE, 8);
-      ObjectSetInteger(0, gPrevBtnName, OBJPROP_COLOR, clrSilver);
-      ObjectSetInteger(0, gPrevBtnName, OBJPROP_BORDER_COLOR, clrGray);
-      ObjectSetInteger(0, gPrevBtnName, OBJPROP_BGCOLOR, clrBlack);
-      ObjectSetInteger(0, gPrevBtnName, OBJPROP_SELECTABLE, false);
-      ObjectSetInteger(0, gPrevBtnName, OBJPROP_HIDDEN, true);
-      ObjectSetString(0, gPrevBtnName, OBJPROP_TEXT, "Prev");
-   }
-   if(ObjectFind(0, gNextBtnName) < 0)
-   {
-      ObjectCreate(0, gNextBtnName, OBJ_BUTTON, gSubWin, 0, 0);
-      ObjectSetInteger(0, gNextBtnName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-      ObjectSetInteger(0, gNextBtnName, OBJPROP_XDISTANCE, 52);
-      ObjectSetInteger(0, gNextBtnName, OBJPROP_YDISTANCE, 18);
-      ObjectSetInteger(0, gNextBtnName, OBJPROP_FONTSIZE, 8);
-      ObjectSetInteger(0, gNextBtnName, OBJPROP_COLOR, clrSilver);
-      ObjectSetInteger(0, gNextBtnName, OBJPROP_BORDER_COLOR, clrGray);
-      ObjectSetInteger(0, gNextBtnName, OBJPROP_BGCOLOR, clrBlack);
-      ObjectSetInteger(0, gNextBtnName, OBJPROP_SELECTABLE, false);
-      ObjectSetInteger(0, gNextBtnName, OBJPROP_HIDDEN, true);
-      ObjectSetString(0, gNextBtnName, OBJPROP_TEXT, "Next");
-   }
-}
-
-void DeleteViewButtons()
-{
-   ObjectDelete(0, gPrevBtnName);
-   ObjectDelete(0, gNextBtnName);
-}
-
-void EnsureTitleLabel()
-{
-   EnsureSubWin();
-   if(ObjectFind(0, gTitleName) < 0)
-      ObjectCreate(0, gTitleName, OBJ_LABEL, gSubWin, 0, 0);
-
-   ObjectSetInteger(0, gTitleName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-   ObjectSetInteger(0, gTitleName, OBJPROP_XDISTANCE, 8);
-   ObjectSetInteger(0, gTitleName, OBJPROP_YDISTANCE, 2);
-   ObjectSetInteger(0, gTitleName, OBJPROP_COLOR, clrSilver);
-   ObjectSetInteger(0, gTitleName, OBJPROP_FONTSIZE, 9);
-   ObjectSetInteger(0, gTitleName, OBJPROP_SELECTABLE, false);
-   ObjectSetInteger(0, gTitleName, OBJPROP_HIDDEN, true);
-   ObjectSetString(0, gTitleName, OBJPROP_TEXT, INDICATOR_NAME);
-}
-
-void DeleteTitleLabel()
-{
-   ObjectDelete(0, gTitleName);
-}
 
 // ---------------- FFT helpers ----------------
 int NextPow2(int v){ int n=1; while(n < v) n <<= 1; return n; }
@@ -527,7 +422,6 @@ double TrueRangeAtShift(const double &high[], const double &low[], const double 
 
 bool FetchSourceSeries(const int total, const double &open[], const double &high[], const double &low[], const double &close[],
                        const long &tick_volume[], const long &volume_arr[],
-                       const int base_shift,
                        double &src_series[], const int needN)
 {
    ArrayResize(src_series, needN);
@@ -540,19 +434,18 @@ bool FetchSourceSeries(const int total, const double &open[], const double &high
          gAtrHandle = iATR(_Symbol, _Period, AtrPeriod);
          if(gAtrHandle == INVALID_HANDLE) return false;
       }
-      int got = CopyBuffer(gAtrHandle, 0, base_shift, needN, src_series);
+      int got = CopyBuffer(gAtrHandle, 0, 0, needN, src_series);
       return (got > 0);
    }
 
    for(int i=0; i<needN; i++)
    {
-      int shift = i + base_shift;
-      int idx = BarIndexFromShift(shift, total);
+      int idx = BarIndexFromShift(i, total);
 
       double v = 0.0;
       switch(FeedSource)
       {
-         case FEED_TR:       v = TrueRangeAtShift(high, low, close, shift, total); break;
+         case FEED_TR:       v = TrueRangeAtShift(high, low, close, i, total); break;
          case FEED_CLOSE:    v = close[idx]; break;
          case FEED_HL2:      v = (high[idx] + low[idx]) * 0.5; break;
          case FEED_HLC3:     v = (high[idx] + low[idx] + close[idx]) / 3.0; break;
@@ -569,14 +462,13 @@ bool FetchSourceSeries(const int total, const double &open[], const double &high
 bool ComputeBar0Phase_Causal(const int total,
                       const double &open[], const double &high[], const double &low[], const double &close[],
                       const long &tick_volume[], const long &volume_arr[],
-                      const int base_shift,
-                      double &out_value, double &out_phase, double &out_amp, double &out_quality)
+                      double &out_value, double &out_phase)
 {
    int N = gN;
    if(N <= 32) return false;
 
    double src_series[];
-   if(!FetchSourceSeries(total, open, high, low, close, tick_volume, volume_arr, base_shift, src_series, N))
+   if(!FetchSourceSeries(total, open, high, low, close, tick_volume, volume_arr, src_series, N))
       return false;
 
    double re[], im[];
@@ -604,22 +496,11 @@ bool ComputeBar0Phase_Causal(const int total,
    }
 
    FFT(re, im, false);
-   double energy_total = 0.0;
-   double energy_band = 0.0;
    for(int k=0; k<N; k++)
    {
-      double r = re[k];
-      double i = im[k];
-      double e = r*r + i*i;
-      energy_total += e;
-
       double m = gMask[k];
-      double rm = r * m;
-      double imv = i * m;
-      energy_band += rm*rm + imv*imv;
-
-      re[k] = rm;
-      im[k] = imv;
+      re[k] *= m;
+      im[k] *= m;
    }
    FFT(re, im, true);
 
@@ -630,40 +511,12 @@ bool ComputeBar0Phase_Causal(const int total,
 
    double phase = MathArctan2(aim, are);
    double amp   = MathSqrt(are*are + aim*aim);
-   out_amp = amp;
 
    if(HoldPhaseOnLowAmp && amp < LowAmpEps)
       phase = gLastPhase;
 
    gLastPhase = phase;
    out_phase = phase;
-
-   double q_energy = (energy_total > 0.0 ? (energy_band / energy_total) : 0.0);
-   if(q_energy < 0.0) q_energy = 0.0;
-   if(q_energy > 1.0) q_energy = 1.0;
-   double q_stab = 1.0;
-   if(QualityUsePhaseStability)
-   {
-      double cb = (CycleBars > 0 ? (double)CycleBars : 1.0);
-      double omega = 2.0*M_PI / cb;
-      if(!gQualityInit)
-      {
-         gQualityInit = true;
-         gPrevPhaseQuality = phase;
-         q_stab = 0.0;
-      }
-      else
-      {
-         double dph = WrapPi(phase - gPrevPhaseQuality);
-         gPrevPhaseQuality = phase;
-         double err = MathAbs(MathAbs(dph) - omega);
-         double tol = omega * (QualityOmegaTolPct / 100.0);
-         q_stab = (tol > 0.0 ? (1.0 - MathMin(1.0, err / tol)) : 0.0);
-      }
-   }
-   if(q_stab < 0.0) q_stab = 0.0;
-   if(q_stab > 1.0) q_stab = 1.0;
-   out_quality = q_energy * q_stab;
 
       double omega_use = 0.0;
       // --- avanço de fase (reduz atraso sem usar futuro; pode antecipar demais se o ciclo mudar) ---
@@ -787,8 +640,7 @@ double ForecastSampleFuture(const double &src_series[], const int len, const int
 bool ComputeBar0Phase_ZeroPhase(const int total,
                                 const double &open[], const double &high[], const double &low[], const double &close[],
                                 const long &tick_volume[], const long &volume_arr[],
-                                const int base_shift,
-                                double &out_value, double &out_phase, double &out_amp, double &out_quality,
+                                double &out_value, double &out_phase,
                                 double &out_future[], int &out_future_count)
 {
    int N = gN;
@@ -803,7 +655,7 @@ bool ComputeBar0Phase_ZeroPhase(const int total,
    ArrayResize(out_future, fcount);
 
    double src_series[];
-   if(!FetchSourceSeries(total, open, high, low, close, tick_volume, volume_arr, base_shift, src_series, N))
+   if(!FetchSourceSeries(total, open, high, low, close, tick_volume, volume_arr, src_series, N))
       return false;
 
    // precompute regression parameters if needed
@@ -846,22 +698,11 @@ bool ComputeBar0Phase_ZeroPhase(const int total,
    }
 
    FFT(re, im, false);
-   double energy_total = 0.0;
-   double energy_band = 0.0;
    for(int k=0; k<N; k++)
    {
-      double r = re[k];
-      double i = im[k];
-      double e = r*r + i*i;
-      energy_total += e;
-
       double mm = gMask[k];
-      double rm = r * mm;
-      double imv = i * mm;
-      energy_band += rm*rm + imv*imv;
-
-      re[k] = rm;
-      im[k] = imv;
+      re[k] *= mm;
+      im[k] *= mm;
    }
    FFT(re, im, true);
 
@@ -873,39 +714,11 @@ bool ComputeBar0Phase_ZeroPhase(const int total,
 
    double phase0 = MathArctan2(aim0, are0);
    double amp0   = MathSqrt(are0*are0 + aim0*aim0);
-   out_amp = amp0;
    if(HoldPhaseOnLowAmp && amp0 < LowAmpEps)
       phase0 = gLastPhase;
 
    gLastPhase = phase0;
    out_phase = phase0;
-
-   double q_energy = (energy_total > 0.0 ? (energy_band / energy_total) : 0.0);
-   if(q_energy < 0.0) q_energy = 0.0;
-   if(q_energy > 1.0) q_energy = 1.0;
-   double q_stab = 1.0;
-   if(QualityUsePhaseStability)
-   {
-      double cb = (CycleBars > 0 ? (double)CycleBars : 1.0);
-      double omega = 2.0*M_PI / cb;
-      if(!gQualityInit)
-      {
-         gQualityInit = true;
-         gPrevPhaseQuality = phase0;
-         q_stab = 0.0;
-      }
-      else
-      {
-         double dph = WrapPi(phase0 - gPrevPhaseQuality);
-         gPrevPhaseQuality = phase0;
-         double err = MathAbs(MathAbs(dph) - omega);
-         double tol = omega * (QualityOmegaTolPct / 100.0);
-         q_stab = (tol > 0.0 ? (1.0 - MathMin(1.0, err / tol)) : 0.0);
-      }
-   }
-   if(q_stab < 0.0) q_stab = 0.0;
-   if(q_stab > 1.0) q_stab = 1.0;
-   out_quality = q_energy * q_stab;
 
    // omega for LeadBars
    double omega_use = 0.0;
@@ -1002,31 +815,27 @@ bool ComputeBar0Phase(const int total,
                       const datetime &time[],
                       const double &open[], const double &high[], const double &low[], const double &close[],
                       const long &tick_volume[], const long &volume_arr[],
-                      const int base_shift,
-                      double &out_value, double &out_phase, double &out_amp, double &out_quality)
+                      double &out_value, double &out_phase)
 {
    if(!ZeroPhaseRT)
    {
       DeleteForecastObjects();
-      return ComputeBar0Phase_Causal(total, open, high, low, close, tick_volume, volume_arr, base_shift, out_value, out_phase, out_amp, out_quality);
+      return ComputeBar0Phase_Causal(total, open, high, low, close, tick_volume, volume_arr, out_value, out_phase);
    }
 
    double future_vals[];
    int future_count = 0;
-   bool ok = ComputeBar0Phase_ZeroPhase(total, open, high, low, close, tick_volume, volume_arr, base_shift,
-                                       out_value, out_phase, out_amp, out_quality, future_vals, future_count);
+   bool ok = ComputeBar0Phase_ZeroPhase(total, open, high, low, close, tick_volume, volume_arr,
+                                       out_value, out_phase, future_vals, future_count);
    if(!ok)
    {
-      if(base_shift == 0) DeleteForecastObjects();
+      DeleteForecastObjects();
       return false;
    }
 
    // time[] comes in chronological order (0=oldest ... total-1=newest) in this indicator.
-   if(base_shift == 0)
-   {
-      datetime t0 = time[BarIndexFromShift(0, total)];
-      UpdateForecastObjects(t0, out_value, future_vals, future_count);
-   }
+   datetime t0 = time[BarIndexFromShift(0, total)];
+   UpdateForecastObjects(t0, out_value, future_vals, future_count);
    return true;
 }
 
@@ -1243,30 +1052,15 @@ void UpdatePhaseClock(const double phase)
 // ---------------- MT5 lifecycle ----------------
 int OnInit()
 {
-   IndicatorSetString(INDICATOR_SHORTNAME, "");
-   SetIndexBuffer(0, gOut, INDICATOR_DATA);
+   IndicatorSetString(INDICATOR_SHORTNAME, INDICATOR_NAME);
+      SetIndexBuffer(0, gOut, INDICATOR_DATA);
    SetIndexBuffer(1, gColor, INDICATOR_COLOR_INDEX);
-   SetIndexBuffer(2, gAmp, INDICATOR_DATA);
-   SetIndexBuffer(3, gQuality, INDICATOR_DATA);
-   SetIndexBuffer(4, gEma, INDICATOR_DATA);
    ArraySetAsSeries(gOut, true);
    ArraySetAsSeries(gColor, true);
-   ArraySetAsSeries(gAmp, true);
-   ArraySetAsSeries(gQuality, true);
-   ArraySetAsSeries(gEma, true);
 IndicatorSetInteger(INDICATOR_DIGITS, 8);
 
    int N = NextPow2(MathMax(32, FFTSize));
    BuildWindowAndMask(N);
-   gViewMode = (int)StartView;
-   gLastViewMode = -1;
-   gColorState = -1;
-   ApplyPlotView();
-   gAuxBootstrapped = false;
-   PlotIndexSetInteger(0, PLOT_SHOW_DATA, true);
-   PlotIndexSetInteger(1, PLOT_SHOW_DATA, true);
-   PlotIndexSetInteger(2, PLOT_SHOW_DATA, true);
-   PlotIndexSetInteger(3, PLOT_SHOW_DATA, true);
 
    if(FeedSource == FEED_ATR)
    {
@@ -1279,10 +1073,6 @@ IndicatorSetInteger(INDICATOR_DIGITS, 8);
    }
 
    PlotIndexSetInteger(0, PLOT_DRAW_BEGIN, N);
-   PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, N);
-   PlotIndexSetInteger(2, PLOT_DRAW_BEGIN, N);
-   PlotIndexSetInteger(3, PLOT_DRAW_BEGIN, N);
-   PlotIndexSetInteger(3, PLOT_SHIFT, EmaShiftBars);
    return INIT_SUCCEEDED;
 }
 
@@ -1292,86 +1082,6 @@ void OnDeinit(const int reason)
       IndicatorRelease(gAtrHandle);
    DeleteForecastObjects();
    DeleteClockObjects();
-   DeleteViewButtons();
-   DeleteTitleLabel();
-}
-
-void BootstrapAuxBuffers(const int rates_total,
-                         const datetime& time[],
-                         const double& open[],
-                         const double& high[],
-                         const double& low[],
-                         const double& close[],
-                         const long& tick_volume[],
-                         const long& volume[])
-{
-   int N = gN;
-   if(rates_total < N || N <= 32)
-      return;
-
-   int hist = MathMin(rates_total - 1, gN * 4);
-   if(hist < 1) return;
-
-   double alpha = 1.0;
-   if(EmaPeriod > 1)
-      alpha = 2.0 / (double)(EmaPeriod + 1);
-   double ema_prev = 0.0;
-   bool ema_init = false;
-
-   double save_last_phase = gLastPhase;
-   bool   save_omega_init = gOmegaInit;
-   double save_prev_phase = gPrevPhaseForOmega;
-   double save_lead_omega = gLeadOmega;
-   bool   save_q_init = gQualityInit;
-   double save_prev_q = gPrevPhaseQuality;
-
-   gLastPhase = 0.0;
-   gOmegaInit = false;
-   gPrevPhaseForOmega = 0.0;
-   gLeadOmega = 0.0;
-   gQualityInit = false;
-   gPrevPhaseQuality = 0.0;
-
-   for(int shift = hist; shift >= 0; --shift)
-   {
-      double outv=0.0, ph=0.0, amp=0.0, qual=0.0;
-      if(ComputeBar0Phase(rates_total, time, open, high, low, close, tick_volume, volume, shift, outv, ph, amp, qual))
-      {
-         gOut[shift] = outv;
-         gAmp[shift] = amp;
-         gQuality[shift] = qual;
-         if(!ema_init)
-         {
-            ema_prev = outv;
-            ema_init = true;
-         }
-         else
-         {
-            ema_prev = alpha * outv + (1.0 - alpha) * ema_prev;
-         }
-         gEma[shift] = ema_prev;
-      }
-   }
-
-   gLastPhase = save_last_phase;
-   gOmegaInit = save_omega_init;
-   gPrevPhaseForOmega = save_prev_phase;
-   gLeadOmega = save_lead_omega;
-   gQualityInit = save_q_init;
-   gPrevPhaseQuality = save_prev_q;
-}
-
-void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
-{
-   if(id == CHARTEVENT_OBJECT_CLICK && (sparam == gPrevBtnName || sparam == gNextBtnName))
-   {
-      if(sparam == gNextBtnName)
-         gViewMode = (gViewMode + 1) % 3;
-      else
-         gViewMode = (gViewMode + 2) % 3;
-      ApplyPlotView();
-      ChartRedraw(0);
-   }
 }
 
 int OnCalculate(const int rates_total,
@@ -1389,16 +1099,6 @@ int OnCalculate(const int rates_total,
    if(rates_total >= 2)
       gIsSeries = (time[0] > time[rates_total - 1]);
 
-   EnsureViewButtons();
-   EnsureTitleLabel();
-   if(gViewMode < VIEW_WAVE || gViewMode > VIEW_QUALITY)
-      gViewMode = VIEW_WAVE;
-   if(gViewMode != gLastViewMode)
-   {
-      ApplyPlotView();
-      gLastViewMode = gViewMode;
-   }
-
    if(rates_total < N || N <= 32)
    {
       DeleteForecastObjects();
@@ -1412,12 +1112,9 @@ int OnCalculate(const int rates_total,
    static double lastBW = -1.0, lastBeta = -1.0;
    static BAND_SHAPE lastBandShape = (BAND_SHAPE)-1;
    static bool lastBand = false;
-   static int lastEmaPeriod = -1;
-   static int lastEmaShift = 0;
 
    if(lastFFT != FFTSize || lastCycle != CycleBars || lastWin != WindowType ||
-      lastBW != BandwidthPct || lastBeta != KaiserBeta || lastBandShape != BandShape || lastBand != ApplyBandpass ||
-      lastEmaPeriod != EmaPeriod || lastEmaShift != EmaShiftBars)
+      lastBW != BandwidthPct || lastBeta != KaiserBeta || lastBandShape != BandShape || lastBand != ApplyBandpass)
    {
       int NN = NextPow2(MathMax(32, FFTSize));
       BuildWindowAndMask(NN);
@@ -1429,61 +1126,19 @@ int OnCalculate(const int rates_total,
       lastBeta = KaiserBeta;
       lastBandShape = BandShape;
       lastBand = ApplyBandpass;
-      lastEmaPeriod = EmaPeriod;
-      lastEmaShift = EmaShiftBars;
-      gQualityInit = false;
-      gColorState = -1;
-      gAuxBootstrapped = false;
 
       PlotIndexSetInteger(0, PLOT_DRAW_BEGIN, gN);
-      PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, gN);
-      PlotIndexSetInteger(2, PLOT_DRAW_BEGIN, gN);
-      PlotIndexSetInteger(3, PLOT_DRAW_BEGIN, gN);
-      PlotIndexSetInteger(3, PLOT_SHIFT, EmaShiftBars);
    }
 
-   if(!gAuxBootstrapped)
-   {
-      BootstrapAuxBuffers(rates_total, time, open, high, low, close, tick_volume, volume);
-      gAuxBootstrapped = true;
-   }
-
-   double outv=0.0, ph=0.0, amp=0.0, qual=0.0;
-   if(ComputeBar0Phase(rates_total, time, open, high, low, close, tick_volume, volume, 0, outv, ph, amp, qual))
+   double outv=0.0, ph=0.0;
+   if(ComputeBar0Phase(rates_total, time, open, high, low, close, tick_volume, volume, outv, ph))
    {
       gOut[0] = outv;        // <-- somente barra 0
-      gAmp[0] = amp;
-      gQuality[0] = qual;
-      if(EmaPeriod <= 1)
-         gEma[0] = gOut[0];
-      else
-      {
-         double alpha = 2.0 / (double)(EmaPeriod + 1);
-         double prev = gEma[1];
-         if(!MathIsValidNumber(prev)) prev = gOut[0];
-         gEma[0] = alpha * gOut[0] + (1.0 - alpha) * prev;
-      }
-      // Cor pela inclinação com limiar percentual (da amplitude)
+      // Cor pela inclinação (comparando com a barra anterior já 'fechada')
       if(rates_total >= 2)
-      {
-         double slope = gOut[0] - gOut[1];
-         double base = MathAbs(amp);
-         double thr = 0.0;
-         if(MinSlopePct > 0.0 && base > 0.0)
-            thr = base * (MinSlopePct / 100.0);
-
-         if(gColorState < 0)
-            gColorState = (slope >= 0.0 ? 0 : 1);
-         else if(MathAbs(slope) >= thr)
-            gColorState = (slope >= 0.0 ? 0 : 1);
-         // se não passou o limiar, mantém a cor
-         gColor[0] = (double)gColorState;
-      }
+         gColor[0] = (gOut[0] >= gOut[1] ? 0.0 : 1.0);
       else
-      {
-         gColorState = 0;
          gColor[0] = 0.0;
-      }
 
       UpdatePhaseClock(ph);
    }
