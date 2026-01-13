@@ -8,8 +8,8 @@
 #property strict
 #property indicator_separate_window
 #define INDICATOR_NAME "FFT_PhaseClock_CLOSE_SINFLIP_LEAD_v1.5_ColorWave"
-#property indicator_buffers 4
-#property indicator_plots   3
+#property indicator_buffers 5
+#property indicator_plots   4
 #property indicator_type1   DRAW_COLOR_LINE
 #property indicator_color1  clrLimeGreen, clrRed
 #property indicator_label1  INDICATOR_NAME
@@ -20,6 +20,9 @@
 #property indicator_type3   DRAW_LINE
 #property indicator_color3  clrGold
 #property indicator_label3  "Qualidade"
+#property indicator_type4   DRAW_LINE
+#property indicator_color4  clrAqua
+#property indicator_label4  "EMA"
 
 
 
@@ -102,6 +105,8 @@ input bool         NormalizeAmp   = false;
 input VIEW_MODE    StartView      = VIEW_WAVE;
 input bool         QualityUsePhaseStability = true;
 input double       QualityOmegaTolPct = 40.0; // tolerancia % para |dPhase|-omega
+input int          EmaPeriod      = 5;
+input bool         ShowEmaPlot    = true;
 input double       PhaseOffsetDeg = 315;   // ajuste de fase aplicado na saída SIN/COS (graus)
 input double       LeadBars         = 0;   // avanço de fase (em "barras") para reduzir atraso; 0 = original
 input bool         LeadUseCycleOmega = true; // true: omega=2*pi/CycleBars (estável). false: omega por dPhase (experimental)
@@ -157,6 +162,7 @@ double gOut[];
 double gColor[]; // 0=up (green), 1=down (red)
 double gAmp[];
 double gQuality[];
+double gEma[];
 
 // ---------------- internals ----------------
 int      gAtrHandle = INVALID_HANDLE;
@@ -196,6 +202,7 @@ void ApplyPlotView()
    PlotIndexSetInteger(0, PLOT_DRAW_TYPE, gViewMode == VIEW_WAVE ? DRAW_COLOR_LINE : DRAW_NONE);
    PlotIndexSetInteger(1, PLOT_DRAW_TYPE, gViewMode == VIEW_AMPLITUDE ? DRAW_LINE : DRAW_NONE);
    PlotIndexSetInteger(2, PLOT_DRAW_TYPE, gViewMode == VIEW_QUALITY ? DRAW_LINE : DRAW_NONE);
+   PlotIndexSetInteger(3, PLOT_DRAW_TYPE, (gViewMode == VIEW_WAVE && ShowEmaPlot) ? DRAW_LINE : DRAW_NONE);
 }
 
 void EnsureViewButtons()
@@ -1234,14 +1241,16 @@ void UpdatePhaseClock(const double phase)
 int OnInit()
 {
    IndicatorSetString(INDICATOR_SHORTNAME, "");
-      SetIndexBuffer(0, gOut, INDICATOR_DATA);
+   SetIndexBuffer(0, gOut, INDICATOR_DATA);
    SetIndexBuffer(1, gColor, INDICATOR_COLOR_INDEX);
    SetIndexBuffer(2, gAmp, INDICATOR_DATA);
    SetIndexBuffer(3, gQuality, INDICATOR_DATA);
+   SetIndexBuffer(4, gEma, INDICATOR_DATA);
    ArraySetAsSeries(gOut, true);
    ArraySetAsSeries(gColor, true);
    ArraySetAsSeries(gAmp, true);
    ArraySetAsSeries(gQuality, true);
+   ArraySetAsSeries(gEma, true);
 IndicatorSetInteger(INDICATOR_DIGITS, 8);
 
    int N = NextPow2(MathMax(32, FFTSize));
@@ -1253,6 +1262,7 @@ IndicatorSetInteger(INDICATOR_DIGITS, 8);
    PlotIndexSetInteger(0, PLOT_SHOW_DATA, true);
    PlotIndexSetInteger(1, PLOT_SHOW_DATA, true);
    PlotIndexSetInteger(2, PLOT_SHOW_DATA, true);
+   PlotIndexSetInteger(3, PLOT_SHOW_DATA, true);
 
    if(FeedSource == FEED_ATR)
    {
@@ -1267,6 +1277,7 @@ IndicatorSetInteger(INDICATOR_DIGITS, 8);
    PlotIndexSetInteger(0, PLOT_DRAW_BEGIN, N);
    PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, N);
    PlotIndexSetInteger(2, PLOT_DRAW_BEGIN, N);
+   PlotIndexSetInteger(3, PLOT_DRAW_BEGIN, N);
    return INIT_SUCCEEDED;
 }
 
@@ -1296,6 +1307,12 @@ void BootstrapAuxBuffers(const int rates_total,
    int hist = MathMin(rates_total - 1, gN * 4);
    if(hist < 1) return;
 
+   double alpha = 1.0;
+   if(EmaPeriod > 1)
+      alpha = 2.0 / (double)(EmaPeriod + 1);
+   double ema_prev = 0.0;
+   bool ema_init = false;
+
    double save_last_phase = gLastPhase;
    bool   save_omega_init = gOmegaInit;
    double save_prev_phase = gPrevPhaseForOmega;
@@ -1315,8 +1332,19 @@ void BootstrapAuxBuffers(const int rates_total,
       double outv=0.0, ph=0.0, amp=0.0, qual=0.0;
       if(ComputeBar0Phase(rates_total, time, open, high, low, close, tick_volume, volume, shift, outv, ph, amp, qual))
       {
+         gOut[shift] = outv;
          gAmp[shift] = amp;
          gQuality[shift] = qual;
+         if(!ema_init)
+         {
+            ema_prev = outv;
+            ema_init = true;
+         }
+         else
+         {
+            ema_prev = alpha * outv + (1.0 - alpha) * ema_prev;
+         }
+         gEma[shift] = ema_prev;
       }
    }
 
@@ -1379,9 +1407,11 @@ int OnCalculate(const int rates_total,
    static double lastBW = -1.0, lastBeta = -1.0;
    static BAND_SHAPE lastBandShape = (BAND_SHAPE)-1;
    static bool lastBand = false;
+   static int lastEmaPeriod = -1;
 
    if(lastFFT != FFTSize || lastCycle != CycleBars || lastWin != WindowType ||
-      lastBW != BandwidthPct || lastBeta != KaiserBeta || lastBandShape != BandShape || lastBand != ApplyBandpass)
+      lastBW != BandwidthPct || lastBeta != KaiserBeta || lastBandShape != BandShape || lastBand != ApplyBandpass ||
+      lastEmaPeriod != EmaPeriod)
    {
       int NN = NextPow2(MathMax(32, FFTSize));
       BuildWindowAndMask(NN);
@@ -1393,12 +1423,14 @@ int OnCalculate(const int rates_total,
       lastBeta = KaiserBeta;
       lastBandShape = BandShape;
       lastBand = ApplyBandpass;
+      lastEmaPeriod = EmaPeriod;
       gQualityInit = false;
       gAuxBootstrapped = false;
 
       PlotIndexSetInteger(0, PLOT_DRAW_BEGIN, gN);
       PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, gN);
       PlotIndexSetInteger(2, PLOT_DRAW_BEGIN, gN);
+      PlotIndexSetInteger(3, PLOT_DRAW_BEGIN, gN);
    }
 
    if(!gAuxBootstrapped)
@@ -1413,6 +1445,15 @@ int OnCalculate(const int rates_total,
       gOut[0] = outv;        // <-- somente barra 0
       gAmp[0] = amp;
       gQuality[0] = qual;
+      if(EmaPeriod <= 1)
+         gEma[0] = gOut[0];
+      else
+      {
+         double alpha = 2.0 / (double)(EmaPeriod + 1);
+         double prev = gEma[1];
+         if(!MathIsValidNumber(prev)) prev = gOut[0];
+         gEma[0] = alpha * gOut[0] + (1.0 - alpha) * prev;
+      }
       // Cor pela inclinação (comparando com a barra anterior já 'fechada')
       if(rates_total >= 2)
          gColor[0] = (gOut[0] >= gOut[1] ? 0.0 : 1.0);
