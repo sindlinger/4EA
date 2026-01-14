@@ -15,6 +15,8 @@
 #property indicator_label1  INDICATOR_NAME
 
 #include <spectralib/SpectralHilbert.mqh>
+#include <spectralib/SpectralOpenCLSWT.mqh>
+#include <spectralib/SpectralPyWTWavelets.mqh>
 
 
 #define CLOCK_MAX_DOTS  120
@@ -76,6 +78,15 @@ enum LAG_PRESET
    LAG_PRESET_ZERO
 };
 
+enum SWT_WAVELET
+{
+   SWT_DB = 0,
+   SWT_SYM,
+   SWT_COIF,
+   SWT_BIOR,
+   SWT_DMEY
+};
+
 // ---------------- inputs ----------------
 input group "PRESET"
 input LAG_PRESET   LagPreset       = LAG_PRESET_CUSTOM;
@@ -99,6 +110,12 @@ input bool         ApplyBandpass  = true;
 input int          CycleBars      = 52;
 input double       BandwidthPct   = 200.0;
 input BAND_SHAPE   BandShape      = BAND_GAUSS;
+
+input group "DENOISE (SWT GPU)"
+input bool         UseSWTDenoise  = false;
+input SWT_WAVELET  SWTWavelet    = SWT_DB;
+input int          SWTOrder      = 4;   // db4 default
+input int          SWTLevel      = 1;   // 1..SwtMaxLevel(N)
 
 input group "SAIDA / FASE / LEAD"
 input OUTPUT_MODE  OutputMode     = OUT_SIN;
@@ -169,6 +186,12 @@ double   gEffLeadBars = 0.0;
 bool     gEffLeadUseCycleOmega = true;
 double   gEffPhaseOffsetDeg = 0.0;
 bool     gEffOneValuePerBar = false;
+
+// SWT denoise (GPU)
+PyWTDiscreteWavelet gSWTW;
+int     gSWTName = -1;
+int     gSWTOrder = -1;
+bool    gSWTReady = false;
 double   gLastPhase = 0.0;
 bool     gOmegaInit = false;
 double   gLeadOmega = 0.0;
@@ -390,6 +413,54 @@ bool BandpassViaSTFT(const double &x_in[], const int N, double &y_out[])
 }
 
 
+// ---------------- SWT Denoise (GPU) ----------------
+int _SWT_ToPyWTName(const SWT_WAVELET w)
+{
+   switch(w)
+   {
+      case SWT_DB:   return PYWT_DB;
+      case SWT_SYM:  return PYWT_SYM;
+      case SWT_COIF: return PYWT_COIF;
+      case SWT_BIOR: return PYWT_BIOR;
+      case SWT_DMEY: return PYWT_DMEY;
+      default:       return PYWT_DB;
+   }
+}
+
+bool _SWT_EnsureWavelet()
+{
+   if(!UseSWTDenoise) return false;
+   int name = _SWT_ToPyWTName(SWTWavelet);
+   int order = SWTOrder;
+   if(name != gSWTName || order != gSWTOrder || !gSWTReady)
+   {
+      gSWTReady = false;
+      gSWTName = name;
+      gSWTOrder = order;
+      if(!PyWT_DiscreteWavelet(name, order, gSWTW))
+         return false;
+      gSWTReady = true;
+   }
+   return gSWTReady;
+}
+
+bool SwtDenoiseGPU(const double &in[], const int N, double &out[])
+{
+   if(!UseSWTDenoise) return false;
+   if(N <= 0) return false;
+   if(!_SWT_EnsureWavelet()) return false;
+
+   int maxlvl = PyWT_SwtMaxLevel(N);
+   int lvl = SWTLevel;
+   if(lvl < 1) lvl = 1;
+   if(lvl > maxlvl) lvl = maxlvl;
+   if(lvl < 1) return false;
+
+   int fstep = 1 << (lvl - 1);
+   return CLSWT_A_Periodization(in, gSWTW.dec_lo, fstep, out);
+}
+
+
 int BarIndexFromShift(const int shift, const int total, const int base_shift)
 {
    // shift: 0 = barra atual, 1 = barra anterior, ...
@@ -508,6 +579,15 @@ bool ComputeBar0Phase_Causal(const int total,
       if(RemoveDC) x -= mean;
       x *= (CausalWindow ? gWinCausal[n] : gWinSym[n]);
       re[n] = x;
+   }
+
+   if(UseSWTDenoise)
+   {
+      double den[];
+      if(SwtDenoiseGPU(re, N, den))
+      {
+         for(int i=0; i<N; i++) re[i] = den[i];
+      }
    }
 
    double band[];
@@ -704,6 +784,15 @@ bool ComputeBar0Phase_ZeroPhase(const int total,
       if(RemoveDC) x -= mean;
       x *= gWinSym[n];
       re[n] = x;
+   }
+
+   if(UseSWTDenoise)
+   {
+      double den[];
+      if(SwtDenoiseGPU(re, N, den))
+      {
+         for(int i=0; i<N; i++) re[i] = den[i];
+      }
    }
 
    double band[];
