@@ -86,7 +86,7 @@ input int          AtrPeriod      = 17;
 input ENUM_TIMEFRAMES FeedIndicatorTF = PERIOD_CURRENT;
 input string       FeedIndicatorName = "Sandbox\\Kalman3DRTS\\Kalman3DRTSZeroPhase_v3.1";
 input int          FeedIndicatorBuffer = 0; // main buffer (nao usar o lead)
-input int          FFTSize        = 512;
+input int          FFTSize        = 65536;
 input WINDOW_TYPE  WindowType     = WND_SINE;
 input double       KaiserBeta     = 4; // 8.6; DEFAULT
 input bool         CausalWindow   = false; // janela com pico no presente (barra 0)
@@ -96,17 +96,17 @@ input bool         OneValuePerBar = false; // calcula 1 valor por barra (usa bar
 
 input group "BANDPASS"
 input bool         ApplyBandpass  = true;
-input int          CycleBars      = 64;
+input int          CycleBars      = 52;
 input double       BandwidthPct   = 200.0;
-input BAND_SHAPE   BandShape      = BAND_RECT;
+input BAND_SHAPE   BandShape      = BAND_GAUSS;
 
 input group "SAIDA / FASE / LEAD"
 input OUTPUT_MODE  OutputMode     = OUT_SIN;
 input bool         NormalizeAmp   = false;
 input double       PhaseOffsetDeg = 315;   // ajuste de fase aplicado na saída SIN/COS (graus)
-input double       LeadBars         = 0;   // avanço de fase (em "barras") para reduzir atraso; 0 = original
+input double       LeadBars         = 10;   // avanço de fase (em "barras") para reduzir atraso; 0 = original
 input bool         LeadUseCycleOmega = true; // true: omega=2*pi/CycleBars (estável). false: omega por dPhase (experimental)
-input double       LeadOmegaSmooth  = 0.6;  // suavização do omega quando LeadUseCycleOmega=false (0..1)
+input double       LeadOmegaSmooth  = 1000;  // suavização do omega quando LeadUseCycleOmega=false (0..1)
 input int          LeadMinCycleBars = 9;     // clamp do período (modo experimental)
 input int          LeadMaxCycleBars = 0;   // clamp do período (modo experimental)
 input bool         InvertOutput   = true;  // inverte sinal da saída SIN/COS
