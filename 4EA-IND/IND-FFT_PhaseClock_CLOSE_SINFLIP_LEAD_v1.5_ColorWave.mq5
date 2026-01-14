@@ -70,13 +70,22 @@ enum FORECAST_MODE
    FC_LINREG         // linear regression on recent bars
 };
 
+enum LAG_PRESET
+{
+   LAG_PRESET_CUSTOM = 0,
+   LAG_PRESET_ZERO
+};
+
 // ---------------- inputs ----------------
+input group "PRESET"
+input LAG_PRESET   LagPreset       = LAG_PRESET_CUSTOM;
+
 input group "FEED / JANELA"
-input FEED_SOURCE  FeedSource     = FEED_OHLC4;
+input FEED_SOURCE  FeedSource     = FEED_INDICATOR;
 input int          AtrPeriod      = 17;
 input ENUM_TIMEFRAMES FeedIndicatorTF = PERIOD_CURRENT;
-input string       FeedIndicatorName = ""; // ex: "MyIndicator" (com inputs default)
-input int          FeedIndicatorBuffer = 0;
+input string       FeedIndicatorName = "Sandbox\\Kalman3DRTS\\Kalman3DRTSZeroPhase_v3.1";
+input int          FeedIndicatorBuffer = 0; // main buffer (nao usar o lead)
 input int          FFTSize        = 512;
 input WINDOW_TYPE  WindowType     = WND_SINE;
 input double       KaiserBeta     = 4; // 8.6; DEFAULT
@@ -87,7 +96,7 @@ input bool         OneValuePerBar = false; // calcula 1 valor por barra (usa bar
 
 input group "BANDPASS"
 input bool         ApplyBandpass  = true;
-input int          CycleBars      = 17;
+input int          CycleBars      = 64;
 input double       BandwidthPct   = 200.0;
 input BAND_SHAPE   BandShape      = BAND_RECT;
 
@@ -155,6 +164,11 @@ int      gN = 0;
 double   gWinCausal[];
 double   gWinSym[];
 double   gMask[];
+int      gEffFFTSize = 0;
+double   gEffLeadBars = 0.0;
+bool     gEffLeadUseCycleOmega = true;
+double   gEffPhaseOffsetDeg = 0.0;
+bool     gEffOneValuePerBar = false;
 double   gLastPhase = 0.0;
 bool     gOmegaInit = false;
 double   gLeadOmega = 0.0;
@@ -466,13 +480,12 @@ bool FetchSourceSeries(const int total, const double &open[], const double &high
 bool ComputeBar0Phase_Causal(const int total,
                       const double &open[], const double &high[], const double &low[], const double &close[],
                       const long &tick_volume[], const long &volume_arr[],
-                      double &out_value, double &out_phase)
+                      double &out_value, double &out_phase, const int base_shift)
 {
    int N = gN;
    if(N <= 32) return false;
 
    double src_series[];
-   int base_shift = (OneValuePerBar ? 1 : 0);
    if(!FetchSourceSeries(total, open, high, low, close, tick_volume, volume_arr, src_series, N, base_shift))
       return false;
 
@@ -519,7 +532,7 @@ bool ComputeBar0Phase_Causal(const int total,
 
       double omega_use = 0.0;
       // --- avanço de fase (reduz atraso sem usar futuro; pode antecipar demais se o ciclo mudar) ---
-      if(LeadUseCycleOmega)
+      if(gEffLeadUseCycleOmega)
       {
          double cb = (CycleBars > 0 ? (double)CycleBars : 1.0);
          omega_use = 2.0*M_PI / cb;
@@ -563,7 +576,7 @@ bool ComputeBar0Phase_Causal(const int total,
       double phase_meas = phase;
 
       // fase usada para gerar SIN/COS (offset + lead)
-      double phase_wave = phase + PhaseOffsetDeg * M_PI / 180.0 + LeadBars * omega_use;
+   double phase_wave = phase + gEffPhaseOffsetDeg * M_PI / 180.0 + gEffLeadBars * omega_use;
 
       // mantém fase em um range razoável para evitar perda numérica
       if(phase_wave >  1000.0*M_PI || phase_wave < -1000.0*M_PI)
@@ -640,7 +653,7 @@ bool ComputeBar0Phase_ZeroPhase(const int total,
                                 const double &open[], const double &high[], const double &low[], const double &close[],
                                 const long &tick_volume[], const long &volume_arr[],
                                 double &out_value, double &out_phase,
-                                double &out_future[], int &out_future_count)
+                                double &out_future[], int &out_future_count, const int base_shift)
 {
    int N = gN;
    if(N <= 32) return false;
@@ -654,7 +667,6 @@ bool ComputeBar0Phase_ZeroPhase(const int total,
    ArrayResize(out_future, fcount);
 
    double src_series[];
-   int base_shift = (OneValuePerBar ? 1 : 0);
    if(!FetchSourceSeries(total, open, high, low, close, tick_volume, volume_arr, src_series, N, base_shift))
       return false;
 
@@ -716,7 +728,7 @@ bool ComputeBar0Phase_ZeroPhase(const int total,
 
    // omega for LeadBars
    double omega_use = 0.0;
-   if(LeadUseCycleOmega)
+   if(gEffLeadUseCycleOmega)
    {
       double cb = (CycleBars > 0 ? (double)CycleBars : 1.0);
       omega_use = 2.0*M_PI / cb;
@@ -754,7 +766,7 @@ bool ComputeBar0Phase_ZeroPhase(const int total,
 
    // output for bar 0
    double phase_meas = phase0;
-   double phase_wave = phase0 + PhaseOffsetDeg * M_PI / 180.0 + LeadBars * omega_use;
+   double phase_wave = phase0 + gEffPhaseOffsetDeg * M_PI / 180.0 + gEffLeadBars * omega_use;
    if(phase_wave >  1000.0*M_PI || phase_wave < -1000.0*M_PI)
       phase_wave = MathMod(phase_wave, 2.0*M_PI);
    double s0 = MathSin(phase_wave);
@@ -782,7 +794,7 @@ bool ComputeBar0Phase_ZeroPhase(const int total,
       double amp   = MathSqrt(are*are + aim*aim);
       if(HoldPhaseOnLowAmp && amp < LowAmpEps) phase = phase0;
 
-      double pw = phase + PhaseOffsetDeg * M_PI / 180.0 + LeadBars * omega_use;
+      double pw = phase + gEffPhaseOffsetDeg * M_PI / 180.0 + gEffLeadBars * omega_use;
       if(pw >  1000.0*M_PI || pw < -1000.0*M_PI)
          pw = MathMod(pw, 2.0*M_PI);
       double ss = MathSin(pw);
@@ -809,29 +821,49 @@ bool ComputeBar0Phase(const int total,
                       const datetime &time[],
                       const double &open[], const double &high[], const double &low[], const double &close[],
                       const long &tick_volume[], const long &volume_arr[],
-                      double &out_value, double &out_phase)
+                      double &out_value, double &out_phase,
+                      const int base_shift, const bool update_forecast)
 {
    if(!ZeroPhaseRT)
    {
       DeleteForecastObjects();
-      return ComputeBar0Phase_Causal(total, open, high, low, close, tick_volume, volume_arr, out_value, out_phase);
+      return ComputeBar0Phase_Causal(total, open, high, low, close, tick_volume, volume_arr, out_value, out_phase, base_shift);
    }
 
    double future_vals[];
    int future_count = 0;
    bool ok = ComputeBar0Phase_ZeroPhase(total, open, high, low, close, tick_volume, volume_arr,
-                                       out_value, out_phase, future_vals, future_count);
+                                       out_value, out_phase, future_vals, future_count, base_shift);
    if(!ok)
    {
       DeleteForecastObjects();
       return false;
    }
 
-   // time[] comes in chronological order (0=oldest ... total-1=newest) in this indicator.
-   int base_shift = (OneValuePerBar ? 1 : 0);
-   datetime t0 = time[BarIndexFromShift(0, total, base_shift)];
-   UpdateForecastObjects(t0, out_value, future_vals, future_count);
+   if(update_forecast)
+   {
+      // time[] comes in chronological order (0=oldest ... total-1=newest) in this indicator.
+      datetime t0 = time[BarIndexFromShift(0, total, base_shift)];
+      UpdateForecastObjects(t0, out_value, future_vals, future_count);
+   }
    return true;
+}
+
+// Compute output for an arbitrary shift (closed bar), without touching forecast objects.
+bool ComputeBarPhaseAtShift(const int total,
+                            const double &open[], const double &high[], const double &low[], const double &close[],
+                            const long &tick_volume[], const long &volume_arr[],
+                            const int shift,
+                            double &out_value, double &out_phase)
+{
+   int base_shift = (shift < 0 ? 0 : shift);
+   if(!ZeroPhaseRT)
+      return ComputeBar0Phase_Causal(total, open, high, low, close, tick_volume, volume_arr, out_value, out_phase, base_shift);
+
+   double future_vals[];
+   int future_count = 0;
+   return ComputeBar0Phase_ZeroPhase(total, open, high, low, close, tick_volume, volume_arr,
+                                     out_value, out_phase, future_vals, future_count, base_shift);
 }
 
 // Forecast draw: use OBJ_TREND segments (no series shifting)
@@ -1048,13 +1080,28 @@ void UpdatePhaseClock(const double phase)
 int OnInit()
 {
    IndicatorSetString(INDICATOR_SHORTNAME, INDICATOR_NAME);
-      SetIndexBuffer(0, gOut, INDICATOR_DATA);
+   SetIndexBuffer(0, gOut, INDICATOR_DATA);
    SetIndexBuffer(1, gColor, INDICATOR_COLOR_INDEX);
    ArraySetAsSeries(gOut, true);
    ArraySetAsSeries(gColor, true);
-IndicatorSetInteger(INDICATOR_DIGITS, 8);
+   IndicatorSetInteger(INDICATOR_DIGITS, 8);
 
-   int N = LocalNextPow2(MathMax(32, FFTSize));
+   // effective params (may be overridden by preset)
+   gEffFFTSize = FFTSize;
+   gEffLeadBars = LeadBars;
+   gEffLeadUseCycleOmega = LeadUseCycleOmega;
+   gEffPhaseOffsetDeg = PhaseOffsetDeg;
+   gEffOneValuePerBar = OneValuePerBar;
+
+   if(LagPreset == LAG_PRESET_ZERO)
+   {
+      gEffFFTSize = 256;
+      gEffLeadBars = 2.0;
+      gEffLeadUseCycleOmega = true;
+      gEffPhaseOffsetDeg = PhaseOffsetDeg;
+   }
+
+   int N = LocalNextPow2(MathMax(32, gEffFFTSize));
    BuildWindowAndMask(N);
 
    if(FeedSource == FEED_ATR)
@@ -1107,9 +1154,36 @@ int OnCalculate(const int rates_total,
                 const long& volume[],
                 const int& spread[])
 {
+   static datetime s_lastBarTime = 0;
+   static bool s_preset_applied = false;
    int N = gN;
    if(rates_total >= 2)
       gIsSeries = (time[0] > time[rates_total - 1]);
+
+   // Apply preset once (can be changed manually after)
+   if(!s_preset_applied && LagPreset == LAG_PRESET_ZERO)
+   {
+      s_preset_applied = true;
+   }
+
+   int cur_idx = BarIndexFromShift(0, rates_total, 0);
+   datetime cur_time = time[cur_idx];
+
+   if(gEffOneValuePerBar)
+   {
+      if(rates_total < 2) return rates_total;
+      if(prev_calculated > 0 && prev_calculated == rates_total)
+      {
+         // mesmo número de barras: ignora ticks
+         return rates_total;
+      }
+      if(cur_time == s_lastBarTime)
+      {
+         // mesma barra: não recalcula
+         return rates_total;
+      }
+      s_lastBarTime = cur_time;
+   }
 
    if(rates_total < N || N <= 32)
    {
@@ -1125,13 +1199,13 @@ int OnCalculate(const int rates_total,
    static BAND_SHAPE lastBandShape = (BAND_SHAPE)-1;
    static bool lastBand = false;
 
-   if(lastFFT != FFTSize || lastCycle != CycleBars || lastWin != WindowType ||
+   if(lastFFT != gEffFFTSize || lastCycle != CycleBars || lastWin != WindowType ||
       lastBW != BandwidthPct || lastBeta != KaiserBeta || lastBandShape != BandShape || lastBand != ApplyBandpass)
    {
-      int NN = LocalNextPow2(MathMax(32, FFTSize));
+      int NN = LocalNextPow2(MathMax(32, gEffFFTSize));
       BuildWindowAndMask(NN);
 
-      lastFFT = FFTSize;
+      lastFFT = gEffFFTSize;
       lastCycle = CycleBars;
       lastWin = WindowType;
       lastBW = BandwidthPct;
@@ -1142,15 +1216,39 @@ int OnCalculate(const int rates_total,
       PlotIndexSetInteger(0, PLOT_DRAW_BEGIN, gN);
    }
 
-   double outv=0.0, ph=0.0;
-   if(ComputeBar0Phase(rates_total, time, open, high, low, close, tick_volume, volume, outv, ph))
+   if(gEffOneValuePerBar)
    {
-      gOut[0] = outv;        // <-- somente barra 0
-      // Cor pela inclinação (comparando com a barra anterior já 'fechada')
-      if(rates_total >= 2)
-         gColor[0] = (gOut[0] >= gOut[1] ? 0.0 : 1.0);
+      double outv=0.0, ph=0.0;
+      int max_shift = rates_total - 2; // última barra fechada no histórico
+      int start_shift = (prev_calculated == 0 ? max_shift : 1);
+      if(start_shift < 1) return rates_total;
+
+      for(int s = start_shift; s >= 1; --s)
+      {
+         if(ComputeBarPhaseAtShift(rates_total, open, high, low, close, tick_volume, volume, s, outv, ph))
+         {
+            gOut[s] = outv;
+            if(rates_total >= s + 2)
+               gColor[s] = (gOut[s] >= gOut[s+1] ? 0.0 : 1.0);
+            else
+               gColor[s] = 0.0;
+         }
+      }
+      gOut[0] = EMPTY_VALUE;
+      gColor[0] = 0.0;
+      UpdatePhaseClock(ph);
+      return rates_total;
+   }
+
+   double outv=0.0, ph=0.0;
+   int base_shift = 0;
+   if(ComputeBar0Phase(rates_total, time, open, high, low, close, tick_volume, volume, outv, ph, base_shift, true))
+   {
+      gOut[base_shift] = outv;
+      if(rates_total >= base_shift + 2)
+         gColor[base_shift] = (gOut[base_shift] >= gOut[base_shift+1] ? 0.0 : 1.0);
       else
-         gColor[0] = 0.0;
+         gColor[base_shift] = 0.0;
 
       UpdatePhaseClock(ph);
    }
