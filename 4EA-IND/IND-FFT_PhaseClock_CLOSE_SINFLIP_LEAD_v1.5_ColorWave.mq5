@@ -14,6 +14,7 @@
 #property indicator_color1  clrLimeGreen, clrRed
 #property indicator_label1  INDICATOR_NAME
 
+#include <spectralib/SpectralHilbert.mqh>
 
 
 #define CLOCK_MAX_DOTS  120
@@ -30,15 +31,16 @@ enum FEED_SOURCE
    FEED_HLC3,
    FEED_OHLC4,
    FEED_VOLUME,
-   FEED_TICKVOLUME
+   FEED_TICKVOLUME,
+   FEED_INDICATOR
 };
 
 enum WINDOW_TYPE
 {
-   WIN_HANN = 0,
-   WIN_SINE,
-   WIN_SQRT_HANN,
-   WIN_KAISER
+   WND_HANN = 0,
+   WND_SINE,
+   WND_SQRT_HANN,
+   WND_KAISER
 };
 
 enum BAND_SHAPE
@@ -69,20 +71,27 @@ enum FORECAST_MODE
 };
 
 // ---------------- inputs ----------------
+input group "FEED / JANELA"
 input FEED_SOURCE  FeedSource     = FEED_OHLC4;
 input int          AtrPeriod      = 17;
+input ENUM_TIMEFRAMES FeedIndicatorTF = PERIOD_CURRENT;
+input string       FeedIndicatorName = ""; // ex: "MyIndicator" (com inputs default)
+input int          FeedIndicatorBuffer = 0;
 input int          FFTSize        = 512;
-input WINDOW_TYPE  WindowType     = WIN_SINE;
+input WINDOW_TYPE  WindowType     = WND_SINE;
 input double       KaiserBeta     = 4; // 8.6; DEFAULT
-
 input bool         CausalWindow   = false; // janela com pico no presente (barra 0)
-
 input bool         RemoveDC       = false;
+input PAD_MODE     PadMode        = PAD_MIRROR;
+input bool         OneValuePerBar = false; // calcula 1 valor por barra (usa barra fechada)
+
+input group "BANDPASS"
 input bool         ApplyBandpass  = true;
 input int          CycleBars      = 17;
 input double       BandwidthPct   = 200.0;
 input BAND_SHAPE   BandShape      = BAND_RECT;
 
+input group "SAIDA / FASE / LEAD"
 input OUTPUT_MODE  OutputMode     = OUT_SIN;
 input bool         NormalizeAmp   = false;
 input double       PhaseOffsetDeg = 315;   // ajuste de fase aplicado na saída SIN/COS (graus)
@@ -92,9 +101,8 @@ input double       LeadOmegaSmooth  = 0.6;  // suavização do omega quando Lead
 input int          LeadMinCycleBars = 9;     // clamp do período (modo experimental)
 input int          LeadMaxCycleBars = 0;   // clamp do período (modo experimental)
 input bool         InvertOutput   = true;  // inverte sinal da saída SIN/COS
-input PAD_MODE     PadMode        = PAD_MIRROR;
 
-// --- Realtime zero-phase (forward/backward) via forecast (lead bars) ---
+input group "ZERO PHASE / FUTURO"
 // Quando true: usa janela simétrica centrada na barra 0 e preenche o futuro (meia-janela) com forecast.
 // Resultado: barra 0 fica na posição correta (sem shift) e somente barra 0 + barras futuras repintam.
 input bool         ZeroPhaseRT       = true;
@@ -106,10 +114,11 @@ input int          ForecastDrawBars  = 0;   // 0 = desenhar todas as barras prev
 input color        ForecastLineColor = clrOrange;
 input int          ForecastLineWidth = 1;
 
+input group "ESTABILIDADE"
 input bool         HoldPhaseOnLowAmp = true;
 input double       LowAmpEps      = 1e-9;
 
-// Clock visuals
+input group "CLOCK"
 input bool         ShowPhaseClock = false;
 input int          ClockXOffset   = 110;     // dist da borda direita (px)
 input int          ClockYOffset   = 55;      // dist do topo (px)
@@ -141,6 +150,7 @@ double gColor[]; // 0=up (green), 1=down (red)
 
 // ---------------- internals ----------------
 int      gAtrHandle = INVALID_HANDLE;
+int      gFeedIndHandle = INVALID_HANDLE;
 int      gN = 0;
 double   gWinCausal[];
 double   gWinSym[];
@@ -163,8 +173,8 @@ int      gSubWin = -1;
 // Detecta se os arrays de entrada chegam como series (0 = barra atual)
 bool     gIsSeries = false;
 
-// ---------------- FFT helpers ----------------
-int NextPow2(int v){ int n=1; while(n < v) n <<= 1; return n; }
+// ---------------- helpers ----------------
+int LocalNextPow2(int v){ int n=1; while(n < v) n <<= 1; return n; }
 
 
 
@@ -174,53 +184,6 @@ double WrapPi(const double a_in)
    while(a >  M_PI) a -= 2.0*M_PI;
    while(a < -M_PI) a += 2.0*M_PI;
    return a;
-}
-
-void FFT(double &re[], double &im[], const bool inverse)
-{
-   int n = ArraySize(re);
-   int j = 0;
-   for(int i=1; i<n; i++)
-   {
-      int bit = n >> 1;
-      while((j & bit) != 0){ j ^= bit; bit >>= 1; }
-      j ^= bit;
-      if(i < j)
-      {
-         double tr = re[i]; re[i] = re[j]; re[j] = tr;
-         double ti = im[i]; im[i] = im[j]; im[j] = ti;
-      }
-   }
-   for(int len=2; len<=n; len<<=1)
-   {
-      double ang = 2.0 * M_PI / len * (inverse ? -1.0 : 1.0);
-      double wlen_re = MathCos(ang);
-      double wlen_im = MathSin(ang);
-      for(int i=0; i<n; i+=len)
-      {
-         double w_re = 1.0;
-         double w_im = 0.0;
-         for(int k=0; k<len/2; k++)
-         {
-            int u = i + k;
-            int v = i + k + len/2;
-            double vr = re[v]*w_re - im[v]*w_im;
-            double vi = re[v]*w_im + im[v]*w_re;
-            re[v] = re[u] - vr;
-            im[v] = im[u] - vi;
-            re[u] = re[u] + vr;
-            im[u] = im[u] + vi;
-            double next_re = w_re*wlen_re - w_im*wlen_im;
-            double next_im = w_re*wlen_im + w_im*wlen_re;
-            w_re = next_re;
-            w_im = next_im;
-         }
-      }
-   }
-   if(inverse)
-   {
-      for(int i=0; i<n; i++){ re[i] /= n; im[i] /= n; }
-   }
 }
 
 // Kaiser window
@@ -314,11 +277,11 @@ void BuildWindowAndMask(const int N)
    {
       // --- janela simétrica (pico no meio da janela) ---
       double ws = 1.0;
-      if(WindowType == WIN_HANN)
+      if(WindowType == WND_HANN)
          ws = 0.5 - 0.5*MathCos(2.0*M_PI*n/(N-1));
-      else if(WindowType == WIN_SINE)
+      else if(WindowType == WND_SINE)
          ws = MathSin(M_PI*(n + 0.5)/N);
-      else if(WindowType == WIN_SQRT_HANN)
+      else if(WindowType == WND_SQRT_HANN)
       {
          double hann = 0.5 - 0.5*MathCos(2.0*M_PI*n/(N-1));
          ws = MathSqrt(hann);
@@ -335,11 +298,11 @@ void BuildWindowAndMask(const int N)
       // Observação: como o cálculo causal pega o sample no fim da janela (re[N-1]),
       // uma janela simétrica derruba a amplitude no "agora". Esta versão evita isso.
       double wc = 1.0;
-      if(WindowType == WIN_HANN)
+      if(WindowType == WND_HANN)
          wc = 0.5 - 0.5*MathCos(M_PI*n/(N-1));
-      else if(WindowType == WIN_SINE)
+      else if(WindowType == WND_SINE)
          wc = MathSin(0.5*M_PI*(double)n/(double)(N-1));
-      else if(WindowType == WIN_SQRT_HANN)
+      else if(WindowType == WND_SQRT_HANN)
       {
          double hann = 0.5 - 0.5*MathCos(M_PI*n/(N-1));
          wc = MathSqrt(hann);
@@ -366,12 +329,6 @@ void BuildWindowAndMask(const int N)
    int half = N/2;
    for(int k=0; k<N; k++)
    {
-      double analytic = 0.0;
-      if(k == 0) analytic = 1.0;
-      else if((N % 2 == 0) && (k == half)) analytic = 1.0;
-      else if(k > 0 && k < half) analytic = 2.0;
-      else analytic = 0.0;
-
       double wband = 1.0;
       if(gMaskOk && ApplyBandpass && CycleBars > 0)
       {
@@ -379,34 +336,69 @@ void BuildWindowAndMask(const int N)
          wband = BandWeight(f);
       }
 
-      gMask[k] = analytic * wband;
+      // Bandpass only (Hilbert/analytic is now done by spectralib)
+      gMask[k] = wband;
    }
 }
 
+// GPU STFT + GPU Hilbert (spectralib) only
 
-int BarIndexFromShift(const int shift, const int total)
+// -------- GPU FFT bandpass helper (uses spectralib CLFFT) --------
+// MQL5 não aceita matriz 2D de Complex64, então usamos FFT 1D (equivalente a STFT com 1 segmento).
+bool BandpassViaSTFT(const double &x_in[], const int N, double &y_out[])
+{
+   if(N <= 0) return false;
+
+   static CLFFTPlan plan;
+   if(!plan.ready) CLFFTReset(plan);
+   if(!CLFFTInit(plan, N)) return false;
+
+   Complex64 inC[];
+   ArrayResize(inC, N);
+   for(int i=0; i<N; i++) inC[i] = Cx(x_in[i], 0.0);
+
+   Complex64 spec[];
+   if(!CLFFTExecute(plan, inC, spec, false)) return false;
+
+   for(int k=0; k<N; k++)
+   {
+      spec[k].re *= gMask[k];
+      spec[k].im *= gMask[k];
+   }
+
+   Complex64 timeC[];
+   if(!CLFFTExecute(plan, spec, timeC, true)) return false;
+
+   ArrayResize(y_out, N);
+   for(int i=0; i<N; i++) y_out[i] = timeC[i].re;
+
+   return true;
+}
+
+
+int BarIndexFromShift(const int shift, const int total, const int base_shift)
 {
    // shift: 0 = barra atual, 1 = barra anterior, ...
    // Se os arrays vierem como series (0 = atual), usamos o shift direto.
    if(gIsSeries)
    {
-      int idx = shift;
+      int idx = shift + base_shift;
       if(idx < 0) idx = 0;
       if(idx >= total) idx = total - 1;
       return idx;
    }
 
    // Caso contrário, arrays em ordem cronológica (0 = mais antigo).
-   int idx = total - 1 - shift;
+   int idx = total - 1 - (shift + base_shift);
    if(idx < 0) idx = 0;
    if(idx >= total) idx = total - 1;
    return idx;
 }
 
 // TR
-double TrueRangeAtShift(const double &high[], const double &low[], const double &close[], int shift, int total)
+double TrueRangeAtShift(const double &high[], const double &low[], const double &close[], int shift, int total, int base_shift)
 {
-   int idx = BarIndexFromShift(shift, total);
+   int idx = BarIndexFromShift(shift, total, base_shift);
    int idx_prev = idx - 1;
    if(idx_prev < 0) idx_prev = 0;
 
@@ -422,30 +414,42 @@ double TrueRangeAtShift(const double &high[], const double &low[], const double 
 
 bool FetchSourceSeries(const int total, const double &open[], const double &high[], const double &low[], const double &close[],
                        const long &tick_volume[], const long &volume_arr[],
-                       double &src_series[], const int needN)
+                       double &src_series[], const int needN, const int base_shift)
 {
    ArrayResize(src_series, needN);
    ArraySetAsSeries(src_series, true);
+
+   if(FeedSource == FEED_INDICATOR)
+   {
+      if(gFeedIndHandle == INVALID_HANDLE)
+      {
+         if(FeedIndicatorName == "") return false;
+         gFeedIndHandle = iCustom(_Symbol, FeedIndicatorTF, FeedIndicatorName);
+         if(gFeedIndHandle == INVALID_HANDLE) return false;
+      }
+      int got = CopyBuffer(gFeedIndHandle, FeedIndicatorBuffer, base_shift, needN, src_series);
+      return (got > 0);
+   }
 
    if(FeedSource == FEED_ATR)
    {
       if(gAtrHandle == INVALID_HANDLE)
       {
          gAtrHandle = iATR(_Symbol, _Period, AtrPeriod);
-         if(gAtrHandle == INVALID_HANDLE) return false;
-      }
-      int got = CopyBuffer(gAtrHandle, 0, 0, needN, src_series);
-      return (got > 0);
+      if(gAtrHandle == INVALID_HANDLE) return false;
+   }
+   int got = CopyBuffer(gAtrHandle, 0, base_shift, needN, src_series);
+   return (got > 0);
    }
 
    for(int i=0; i<needN; i++)
    {
-      int idx = BarIndexFromShift(i, total);
+      int idx = BarIndexFromShift(i, total, base_shift);
 
       double v = 0.0;
       switch(FeedSource)
       {
-         case FEED_TR:       v = TrueRangeAtShift(high, low, close, i, total); break;
+         case FEED_TR:       v = TrueRangeAtShift(high, low, close, i, total, base_shift); break;
          case FEED_CLOSE:    v = close[idx]; break;
          case FEED_HL2:      v = (high[idx] + low[idx]) * 0.5; break;
          case FEED_HLC3:     v = (high[idx] + low[idx] + close[idx]) / 3.0; break;
@@ -468,20 +472,19 @@ bool ComputeBar0Phase_Causal(const int total,
    if(N <= 32) return false;
 
    double src_series[];
-   if(!FetchSourceSeries(total, open, high, low, close, tick_volume, volume_arr, src_series, N))
+   int base_shift = (OneValuePerBar ? 1 : 0);
+   if(!FetchSourceSeries(total, open, high, low, close, tick_volume, volume_arr, src_series, N, base_shift))
       return false;
 
-   double re[], im[];
+   double re[];
    ArrayResize(re, N);
-   ArrayResize(im, N);
-
    double mean = 0.0;
    // chrono: re[0]=mais antigo ... re[N-1]=mais recente (barra 0)
    for(int n=0; n<N; n++)
    {
       int sidx = (N-1 - n);
       double x = GetSeriesSample(src_series, sidx, N);
-      re[n] = x; im[n] = 0.0;
+      re[n] = x;
       mean += x;
    }
    mean = (N>0 ? mean/(double)N : 0.0);
@@ -492,20 +495,16 @@ bool ComputeBar0Phase_Causal(const int total,
       if(RemoveDC) x -= mean;
       x *= (CausalWindow ? gWinCausal[n] : gWinSym[n]);
       re[n] = x;
-      im[n] = 0.0;
    }
 
-   FFT(re, im, false);
-   for(int k=0; k<N; k++)
-   {
-      double m = gMask[k];
-      re[k] *= m;
-      im[k] *= m;
-   }
-   FFT(re, im, true);
+   double band[];
+   if(!BandpassViaSTFT(re, N, band)) return false;
 
-   double are = re[N-1];
-   double aim = im[N-1];
+   Complex64 an[];
+   if(!hilbert_analytic_gpu(band, an)) return false;
+
+   double are = an[N-1].re;
+   double aim = an[N-1].im;
    if(!MathIsValidNumber(are)) are = 0.0;
    if(!MathIsValidNumber(aim)) aim = 0.0;
 
@@ -655,7 +654,8 @@ bool ComputeBar0Phase_ZeroPhase(const int total,
    ArrayResize(out_future, fcount);
 
    double src_series[];
-   if(!FetchSourceSeries(total, open, high, low, close, tick_volume, volume_arr, src_series, N))
+   int base_shift = (OneValuePerBar ? 1 : 0);
+   if(!FetchSourceSeries(total, open, high, low, close, tick_volume, volume_arr, src_series, N, base_shift))
       return false;
 
    // precompute regression parameters if needed
@@ -663,9 +663,8 @@ bool ComputeBar0Phase_ZeroPhase(const int total,
    if(ForecastMode == FC_LINREG)
       LinRegParams(src_series, N, ForecastRegBars, b, m);
 
-   double re[], im[];
+   double re[];
    ArrayResize(re, N);
-   ArrayResize(im, N);
 
    // build centered series: indices n=0..N-1 correspond to t=-half..+half-1.
    double mean = 0.0;
@@ -683,7 +682,6 @@ bool ComputeBar0Phase_ZeroPhase(const int total,
          x = ForecastSampleFuture(src_series, N, rel, ForecastMode, b, m);
       }
       re[n] = x;
-      im[n] = 0.0;
       mean += x;
    }
    mean = (N > 0 ? mean/(double)N : 0.0);
@@ -694,21 +692,17 @@ bool ComputeBar0Phase_ZeroPhase(const int total,
       if(RemoveDC) x -= mean;
       x *= gWinSym[n];
       re[n] = x;
-      im[n] = 0.0;
    }
 
-   FFT(re, im, false);
-   for(int k=0; k<N; k++)
-   {
-      double mm = gMask[k];
-      re[k] *= mm;
-      im[k] *= mm;
-   }
-   FFT(re, im, true);
+   double band[];
+   if(!BandpassViaSTFT(re, N, band)) return false;
+
+   Complex64 an[];
+   if(!hilbert_analytic_gpu(band, an)) return false;
 
    int idx0 = half; // barra 0 alinhada ao centro (zero-phase)
-   double are0 = re[idx0];
-   double aim0 = im[idx0];
+   double are0 = an[idx0].re;
+   double aim0 = an[idx0].im;
    if(!MathIsValidNumber(are0)) are0 = 0.0;
    if(!MathIsValidNumber(aim0)) aim0 = 0.0;
 
@@ -780,8 +774,8 @@ bool ComputeBar0Phase_ZeroPhase(const int total,
       if(idx < 0) idx = 0;
       if(idx >= N) idx = N-1;
 
-      double are = re[idx];
-      double aim = im[idx];
+      double are = an[idx].re;
+      double aim = an[idx].im;
       if(!MathIsValidNumber(are)) are = 0.0;
       if(!MathIsValidNumber(aim)) aim = 0.0;
       double phase = MathArctan2(aim, are);
@@ -834,7 +828,8 @@ bool ComputeBar0Phase(const int total,
    }
 
    // time[] comes in chronological order (0=oldest ... total-1=newest) in this indicator.
-   datetime t0 = time[BarIndexFromShift(0, total)];
+   int base_shift = (OneValuePerBar ? 1 : 0);
+   datetime t0 = time[BarIndexFromShift(0, total, base_shift)];
    UpdateForecastObjects(t0, out_value, future_vals, future_count);
    return true;
 }
@@ -1059,7 +1054,7 @@ int OnInit()
    ArraySetAsSeries(gColor, true);
 IndicatorSetInteger(INDICATOR_DIGITS, 8);
 
-   int N = NextPow2(MathMax(32, FFTSize));
+   int N = LocalNextPow2(MathMax(32, FFTSize));
    BuildWindowAndMask(N);
 
    if(FeedSource == FEED_ATR)
@@ -1072,6 +1067,21 @@ IndicatorSetInteger(INDICATOR_DIGITS, 8);
       }
    }
 
+   if(FeedSource == FEED_INDICATOR)
+   {
+      if(FeedIndicatorName == "")
+      {
+         Print("Erro: FeedIndicatorName vazio.");
+         return INIT_FAILED;
+      }
+      gFeedIndHandle = iCustom(_Symbol, FeedIndicatorTF, FeedIndicatorName);
+      if(gFeedIndHandle == INVALID_HANDLE)
+      {
+         Print("Erro: nao conseguiu criar iCustom para feed.");
+         return INIT_FAILED;
+      }
+   }
+
    PlotIndexSetInteger(0, PLOT_DRAW_BEGIN, N);
    return INIT_SUCCEEDED;
 }
@@ -1080,6 +1090,8 @@ void OnDeinit(const int reason)
 {
    if(gAtrHandle != INVALID_HANDLE)
       IndicatorRelease(gAtrHandle);
+   if(gFeedIndHandle != INVALID_HANDLE)
+      IndicatorRelease(gFeedIndHandle);
    DeleteForecastObjects();
    DeleteClockObjects();
 }
@@ -1116,7 +1128,7 @@ int OnCalculate(const int rates_total,
    if(lastFFT != FFTSize || lastCycle != CycleBars || lastWin != WindowType ||
       lastBW != BandwidthPct || lastBeta != KaiserBeta || lastBandShape != BandShape || lastBand != ApplyBandpass)
    {
-      int NN = NextPow2(MathMax(32, FFTSize));
+      int NN = LocalNextPow2(MathMax(32, FFTSize));
       BuildWindowAndMask(NN);
 
       lastFFT = FFTSize;
